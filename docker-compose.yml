@@ -1,0 +1,15 @@
+# Starts MongoDB on your machine for local development.
+# Run: docker compose up -d
+# Then copy .env.example to .env (default URI matches this service).
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - be_ther_mongo_data:/data/db
+
+volumes:
+  be_ther_mongo_data:
