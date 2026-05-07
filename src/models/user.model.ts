@@ -18,6 +18,7 @@ const userSchema = new Schema(
     bio: { type: String, default: '' },
     googleSub: { type: String, unique: true, sparse: true, index: true },
     emailVerified: { type: Boolean, default: false },
+    authProvider: { type: String, enum: ['otp', 'password', 'google'], default: 'otp', index: true },
     /** bcrypt hash; absent for OAuth-only accounts */
     passwordHash: { type: String, default: '' },
     age: { type: Number, min: 1, max: 120 },

@@ -5,6 +5,7 @@ import type { Env } from '../config/env.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../lib/jwt.js';
 import { sendOtpEmail } from '../lib/mail.js';
 import { verifyGoogleIdToken } from '../lib/google.js';
+import { savePublicObject } from '../lib/storage.js';
 import { OtpChallengeModel } from '../models/otp-challenge.model.js';
 import { UserModel } from '../models/user.model.js';
 
@@ -12,6 +13,13 @@ export const USERNAME_SIGNUP_REGEX = /^[a-z0-9]{3,32}$/;
 
 function emailLocalPart(email: string): string {
   return email.split('@')[0]?.replace(/[^a-z0-9_]/gi, '').toLowerCase() || 'user';
+}
+
+function firstNameFromGoogleName(name?: string): string | undefined {
+  const raw = name?.trim();
+  if (!raw) return undefined;
+  const first = raw.split(/\s+/)[0]?.trim();
+  return first && first.length > 0 ? first : undefined;
 }
 
 function normalizeIdentifier(identifier: string): string {
@@ -194,6 +202,7 @@ export async function verifyOtp(env: Env, email: string, code: string): Promise<
       username: uname,
       displayName: uname,
       emailVerified: true,
+      authProvider: 'otp',
     });
   } else {
     user.emailVerified = true;
@@ -260,6 +269,9 @@ export async function loginWithPassword(
   if (!user) {
     throw new Error('Invalid credentials');
   }
+  if (user.authProvider === 'google' && !user.passwordHash) {
+    throw new Error('Use Google sign-in for this account');
+  }
   if (!user.passwordHash) {
     throw new Error('Password login is not available for this account');
   }
@@ -322,6 +334,7 @@ export async function verifySignupOtp(
     username: challenge.signupUsername,
     displayName: challenge.signupDisplayName,
     emailVerified: true,
+    authProvider: 'password',
     passwordHash: challenge.signupPasswordHash,
     ...(challenge.signupAge != null ? { age: challenge.signupAge } : {}),
   });
@@ -346,19 +359,35 @@ export async function loginWithGoogle(env: Env, idToken: string): Promise<{ acce
     if (user) {
       user.googleSub = google.sub;
       user.emailVerified = true;
+      user.authProvider = user.authProvider || 'google';
       if (google.picture && !user.avatarUrl) user.avatarUrl = google.picture;
-      if (google.name && user.displayName === user.username) user.displayName = google.name;
+      const firstName = firstNameFromGoogleName(google.name);
+      if (firstName && user.displayName === user.username) user.displayName = firstName;
       await user.save();
     } else {
       const base = emailLocalPart(google.email);
       const username = await uniqueUsername(base);
+      const firstName = firstNameFromGoogleName(google.name);
+      let avatarUrl = '';
+      if (google.picture) {
+        try {
+          const res = await fetch(google.picture);
+          const buf = Buffer.from(await res.arrayBuffer());
+          const mime = res.headers.get('content-type') || 'image/jpeg';
+          avatarUrl = await savePublicObject(env, buf, mime);
+        } catch {
+          avatarUrl = google.picture;
+        }
+      }
       user = await UserModel.create({
         email: google.email.toLowerCase(),
         username,
-        displayName: google.name ?? username,
-        avatarUrl: google.picture ?? '',
+        displayName: firstName ?? username,
+        avatarUrl,
         googleSub: google.sub,
         emailVerified: true,
+        authProvider: 'google',
+        passwordHash: '',
       });
     }
   }

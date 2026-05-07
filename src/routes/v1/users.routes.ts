@@ -26,7 +26,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     async (req, reply) => {
       const user = await UserModel.findById(req.userId).lean();
       if (!user) {
-        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+        // Treat missing user for an authenticated token as stale/invalid auth state.
+        return reply.status(401).send({ ok: false, error: { message: 'Invalid token user' } });
       }
       return reply.send({ ok: true, data: user });
     },
