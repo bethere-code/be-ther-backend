@@ -1,0 +1,27 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: be-ther-backend:latest
+    container_name: be-ther-backend-app
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    depends_on:
+      - mongodb
+    ports:
+      - '127.0.0.1:3000:3000'
+    volumes:
+      - be_ther_uploads_data:/app/uploads
+
+  mongodb:
+    image: mongo:7
+    container_name: be-ther-backend-mongodb
+    restart: unless-stopped
+    volumes:
+      - be_ther_mongo_data:/data/db
+
+volumes:
+  be_ther_mongo_data:
+  be_ther_uploads_data:

@@ -1,0 +1,15 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+*.log
+npm-debug.log*
+yarn-error.log
+coverage
+.DS_Store
+README.md
+docker-compose*.yml
+Jenkinsfile
+deploy

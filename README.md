@@ -14,6 +14,28 @@ Optional: `npm run seed:explore` to insert explore events after MongoDB is up.
 
 All variables are documented in [`.env.example`](./.env.example). For plain-language onboarding (OTP flow, R2 vs local, emulator URL), see [../docs/FEATURE_NOTE_AUTH_MEDIA.md](../docs/FEATURE_NOTE_AUTH_MEDIA.md).
 
+## Production Deployment (Docker + Nginx + Jenkins)
+
+1. Copy `.env.production.example` to `.env.production` and fill real secrets.
+2. Start backend stack:
+   - `docker compose -f docker-compose.prod.yml up -d --build`
+3. Verify app health:
+   - `curl http://127.0.0.1:3000/health`
+4. Configure Nginx with `deploy/nginx/be-ther.com.conf`:
+   - Copy file to `/etc/nginx/sites-available/be-ther.com.conf`
+   - Create symlink in `/etc/nginx/sites-enabled/`
+   - `sudo nginx -t && sudo systemctl reload nginx`
+5. Enable HTTPS:
+   - `sudo certbot --nginx -d be-ther.com -d www.be-ther.com`
+
+### Jenkins pipeline
+
+- Use `Jenkinsfile` in this folder.
+- Jenkins agent must have Docker + Docker Compose installed and permission to run Docker.
+- Keep `.env.production` on the server (do not commit secrets).
+- Pipeline validates (`lint`, `typecheck`) and deploys with:
+  - `docker compose -f docker-compose.prod.yml up -d --build`
+
 ## Scripts
 
 - `npm run dev` — watch mode with `tsx`
