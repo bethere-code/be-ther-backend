@@ -3,6 +3,7 @@ import { Types } from 'mongoose';
 import { z } from 'zod';
 
 import { BookmarkModel } from '../../models/bookmark.model.js';
+import { CalendarModel } from '../../models/calendar.model.js';
 import { LikeModel } from '../../models/like.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
@@ -11,8 +12,8 @@ import { UserModel } from '../../models/user.model.js';
 
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
-  country: z.string().min(1).max(200),
-  status: z.enum(['been', 'going']),
+  country: z.string().max(200).optional(),
+  status: z.enum(['been', 'going', 'interested']),
   imageUrl: z.string().min(4),
   caption: z.string().max(2000).optional(),
   isPrivate: z.boolean().optional(),
@@ -21,6 +22,7 @@ const createPostSchema = z.object({
     .object({
       type: z.enum(['event', 'place', 'concert']),
       date: z.string().optional(),
+      time: z.string().optional(),
       venue: z.string().optional(),
       ticketUrl: z.string().optional(),
     })
@@ -57,6 +59,41 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/api/v1/posts/search',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const q = req.query as { query?: string; country?: string; skip?: string };
+      const query = q.query?.trim() ?? '';
+      const country = q.country?.trim();
+      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+      const limit = 10;
+
+      const filter: any = {
+        $or: [{ isPrivate: false }, { authorId: req.userId }],
+      };
+
+      if (query) {
+        filter.location = { $regex: query, $options: 'i' };
+      }
+
+      if (country) {
+        filter.country = country;
+      }
+
+      const posts = await PostModel.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit + 1)
+        .populate('authorId', 'username displayName avatarUrl')
+        .lean();
+
+      const page = posts.slice(0, limit);
+      const hasMore = posts.length > limit;
+      return reply.send({ ok: true, data: { items: page, nextSkip: hasMore ? skip + limit : null } });
+    },
+  );
+
   app.post(
     '/api/v1/posts',
     { preHandler: [app.authenticate] },
@@ -74,7 +111,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const post = await PostModel.create({
         authorId,
         location: parsed.data.location,
-        country: parsed.data.country,
+        country: parsed.data.country ?? '',
         status: parsed.data.status,
         imageUrl: parsed.data.imageUrl,
         caption: parsed.data.caption ?? '',
@@ -132,6 +169,47 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         });
       }
       return reply.send({ ok: true, data: { bookmarked: true } });
+    },
+  );
+
+  app.post(
+    '/api/v1/posts/:id/calendar',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      if (post.isPrivate && String(post.authorId) !== userId) {
+        return reply.status(403).send({ ok: false, error: { message: 'Cannot add private event to calendar' } });
+      }
+
+      const existing = await CalendarModel.findOne({ postId, userId });
+      if (existing) {
+        await existing.deleteOne();
+        await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
+        return reply.send({ ok: true, data: { inCalendar: false } });
+      }
+
+      await CalendarModel.create({ postId, userId });
+      await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
+
+      if (String(post.authorId) !== userId) {
+        const mutual = await mutualStarExists(userId, String(post.authorId));
+        await NotificationModel.create({
+          userId: post.authorId,
+          type: 'calendar',
+          actorUserId: userId,
+          postId,
+          mutualStar: mutual,
+        });
+      }
+
+      return reply.send({ ok: true, data: { inCalendar: true } });
     },
   );
 }

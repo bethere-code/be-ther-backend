@@ -1,10 +1,84 @@
 import type { FastifyInstance } from 'fastify';
+import { Types } from 'mongoose';
 import { z } from 'zod';
 
+import { BookmarkModel } from '../../models/bookmark.model.js';
+import { CalendarModel } from '../../models/calendar.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
+import { computeMemberBadge, formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
+
+type LeanPost = {
+  _id: Types.ObjectId;
+  location: string;
+  country?: string;
+  status: string;
+  imageUrl: string;
+  isPrivate?: boolean;
+  eventDetails?: {
+    date?: string;
+    time?: string;
+    venue?: string;
+    ticketUrl?: string;
+  };
+  createdAt?: Date;
+};
+
+function mapPostToCalendarItem(
+  post: LeanPost,
+  source: 'authored' | 'calendar',
+  bookmarked: boolean,
+) {
+  const date =
+    parseEventDateToIso(post.eventDetails?.date) ??
+    (post.createdAt ? new Date(post.createdAt).toISOString().slice(0, 10) : null);
+
+  return {
+    postId: String(post._id),
+    date,
+    location: post.location,
+    imageUrl: post.imageUrl,
+    status: post.status,
+    venue: post.eventDetails?.venue ?? post.country ?? '',
+    ticketUrl: post.eventDetails?.ticketUrl ?? null,
+    time: post.eventDetails?.time ?? null,
+    source,
+    bookmarked,
+  };
+}
+
+async function enrichUserForViewer(
+  user: Record<string, unknown>,
+  viewerId: string | undefined,
+): Promise<Record<string, unknown>> {
+  const userId = String(user._id);
+  const isOwnProfile = viewerId != null && userId === viewerId;
+  let isStarredByMe = false;
+  let canDM = false;
+
+  if (!isOwnProfile && viewerId) {
+    isStarredByMe = Boolean(
+      await ProfileStarModel.exists({ fromUserId: viewerId, toUserId: userId }),
+    );
+    if (isStarredByMe) {
+      canDM = Boolean(
+        await ProfileStarModel.exists({ fromUserId: userId, toUserId: viewerId }),
+      );
+    }
+  }
+
+  const starsReceived = Number(user.starsReceived ?? 0);
+  return {
+    ...user,
+    isOwnProfile,
+    isStarredByMe,
+    canDM,
+    badge: computeMemberBadge(starsReceived),
+    joined: formatJoinedDate(user.createdAt as Date | string | undefined),
+  };
+}
 
 const patchUserSchema = z.object({
   displayName: z.string().min(1).max(80).optional(),
@@ -29,7 +103,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         // Treat missing user for an authenticated token as stale/invalid auth state.
         return reply.status(401).send({ ok: false, error: { message: 'Invalid token user' } });
       }
-      return reply.send({ ok: true, data: user });
+      const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
+      return reply.send({ ok: true, data });
     },
   );
 
@@ -70,7 +145,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
       }
     }
-    return reply.send({ ok: true, data: user });
+    const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
+    return reply.send({ ok: true, data });
   });
 
   app.post(
@@ -111,15 +187,76 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     { preHandler: [app.authenticate] },
     async (req, reply) => {
       const username = String((req.params as { username: string }).username).toLowerCase();
-      const user = await UserModel.findOne({ username }).select('_id').lean();
+      const user = await UserModel.findOne({ username }).select('_id settings').lean();
       if (!user) {
         return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
       }
-      const posts = await PostModel.find({ authorId: user._id })
-        .select('location status imageUrl createdAt eventDetails country')
+
+      const viewerId = req.userId!;
+      const isOwnProfile = String(user._id) === viewerId;
+
+      if (user.settings?.isPrivateProfile && !isOwnProfile) {
+        const starred = await ProfileStarModel.exists({ fromUserId: viewerId, toUserId: user._id });
+        if (!starred) {
+          return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        }
+      }
+
+      const authored = await PostModel.find({ authorId: user._id })
+        .select('location status imageUrl createdAt eventDetails country isPrivate')
         .sort({ createdAt: -1 })
         .lean();
-      return reply.send({ ok: true, data: { items: posts } });
+
+      const visibleAuthored = isOwnProfile
+        ? authored
+        : authored.filter((post) => !post.isPrivate);
+
+      const postIds = new Set<string>();
+      const mergedPosts: Array<{ post: LeanPost; source: 'authored' | 'calendar' }> = [];
+
+      for (const post of visibleAuthored) {
+        const id = String(post._id);
+        if (postIds.has(id)) continue;
+        postIds.add(id);
+        mergedPosts.push({ post: post as LeanPost, source: 'authored' });
+      }
+
+      if (isOwnProfile) {
+        const saved = await CalendarModel.find({ userId: user._id }).select('postId').lean();
+        const savedIds = saved.map((entry) => entry.postId);
+        if (savedIds.length > 0) {
+          const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
+            .select('location status imageUrl createdAt eventDetails country isPrivate')
+            .lean();
+          for (const post of savedPosts) {
+            const id = String(post._id);
+            if (postIds.has(id)) continue;
+            postIds.add(id);
+            mergedPosts.push({ post: post as LeanPost, source: 'calendar' });
+          }
+        }
+      }
+
+      const bookmarkedSet = new Set<string>();
+      if (mergedPosts.length > 0) {
+        const bookmarks = await BookmarkModel.find({
+          userId: viewerId,
+          postId: { $in: [...postIds] },
+        })
+          .select('postId')
+          .lean();
+        for (const bookmark of bookmarks) {
+          bookmarkedSet.add(String(bookmark.postId));
+        }
+      }
+
+      const items = mergedPosts
+        .map(({ post, source }) =>
+          mapPostToCalendarItem(post, source, bookmarkedSet.has(String(post._id))),
+        )
+        .filter((item) => item.date != null);
+
+      return reply.send({ ok: true, data: { items } });
     },
   );
 }
