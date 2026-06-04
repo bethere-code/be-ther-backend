@@ -9,6 +9,7 @@ import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
+import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
@@ -18,6 +19,7 @@ const createPostSchema = z.object({
   caption: z.string().max(2000).optional(),
   isPrivate: z.boolean().optional(),
   taggedUsernames: z.array(z.string()).max(20).optional(),
+  addToCalendar: z.boolean().optional(),
   eventDetails: z
     .object({
       type: z.enum(['event', 'place', 'concert']),
@@ -50,12 +52,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit + 1)
-        .populate('authorId', 'username displayName avatarUrl')
+        .populate('authorId', 'username displayName avatarUrl starsReceived')
         .lean();
 
       const page = posts.slice(0, limit);
       const hasMore = posts.length > limit;
-      return reply.send({ ok: true, data: { items: page, nextSkip: hasMore ? skip + limit : null } });
+      const enriched = await enrichPostsForViewer(page as never[], req.userId!);
+      return reply.send({ ok: true, data: { items: enriched, nextSkip: hasMore ? skip + limit : null } });
     },
   );
 
@@ -85,12 +88,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit + 1)
-        .populate('authorId', 'username displayName avatarUrl')
+        .populate('authorId', 'username displayName avatarUrl starsReceived')
         .lean();
 
       const page = posts.slice(0, limit);
       const hasMore = posts.length > limit;
-      return reply.send({ ok: true, data: { items: page, nextSkip: hasMore ? skip + limit : null } });
+      const enriched = await enrichPostsForViewer(page as never[], req.userId!);
+      return reply.send({ ok: true, data: { items: enriched, nextSkip: hasMore ? skip + limit : null } });
     },
   );
 
@@ -120,7 +124,22 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         eventDetails: parsed.data.eventDetails,
       });
       await UserModel.updateOne({ _id: authorId }, { $inc: { placesVisited: 1 } });
-      return reply.send({ ok: true, data: post.toJSON() });
+
+      let inCalendar = false;
+      if (parsed.data.addToCalendar) {
+        const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
+        if (!existing) {
+          await CalendarModel.create({ postId: post._id, userId: authorId });
+          await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
+        }
+        inCalendar = true;
+      }
+
+      const json = post.toJSON() as Record<string, unknown>;
+      return reply.send({
+        ok: true,
+        data: { ...json, postId: String(post._id), inCalendar },
+      });
     },
   );
 
@@ -130,6 +149,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     async (req, reply) => {
       const postId = (req.params as { id: string }).id;
       const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
       const existing = await LikeModel.findOne({ postId, userId });
       if (existing) {
         await existing.deleteOne();
@@ -148,6 +177,11 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     async (req, reply) => {
       const postId = (req.params as { id: string }).id;
       const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
       const post = await PostModel.findById(postId).lean();
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
@@ -178,6 +212,10 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     async (req, reply) => {
       const postId = (req.params as { id: string }).id;
       const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
 
       const post = await PostModel.findById(postId).lean();
       if (!post) {

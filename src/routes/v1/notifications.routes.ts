@@ -11,9 +11,21 @@ export async function registerNotificationsV1Routes(app: FastifyInstance): Promi
         .sort({ createdAt: -1 })
         .limit(100)
         .populate('actorUserId', 'username displayName avatarUrl')
-        .populate('postId', 'location imageUrl')
+        .populate('postId', 'location imageUrl caption status eventDetails')
         .lean();
       return reply.send({ ok: true, data: { items } });
+    },
+  );
+
+  app.get(
+    '/api/v1/notifications/unread-count',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const count = await NotificationModel.countDocuments({
+        userId: req.userId,
+        read: false,
+      });
+      return reply.send({ ok: true, data: { count } });
     },
   );
 

@@ -26,6 +26,7 @@ export function parseEventDateToIso(raw?: string | null): string | null {
   const rangeMatch = trimmed.match(/([A-Za-z]+)\s+(\d+)(?:-\d+)?,\s*(\d{4})/);
   if (rangeMatch) {
     const [, monthRaw, dayRaw, yearRaw] = rangeMatch;
+    if (!monthRaw || !dayRaw || !yearRaw) return null;
     const month = monthMap[monthRaw.slice(0, 3).toLowerCase()];
     if (month === undefined) return null;
     const day = Number(dayRaw);
