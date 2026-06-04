@@ -7,6 +7,8 @@ import { CalendarModel } from '../../models/calendar.model.js';
 import { LikeModel } from '../../models/like.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
+import { PostReportModel } from '../../models/post-report.model.js';
+import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
@@ -248,6 +250,177 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
 
       return reply.send({ ok: true, data: { inCalendar: true } });
+    },
+  );
+
+  app.post(
+    '/api/v1/posts/:id/hide-on-profile',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const isAuthor = String(post.authorId) === userId;
+      const onCalendar = await CalendarModel.exists({ postId, userId });
+      if (!isAuthor && !onCalendar) {
+        return reply.status(403).send({
+          ok: false,
+          error: { message: 'Event is not on your profile calendar' },
+        });
+      }
+
+      const alreadyHidden = await ProfileCalendarHiddenModel.exists({ profileUserId: userId, postId });
+      if (!alreadyHidden) {
+        await ProfileCalendarHiddenModel.create({ profileUserId: userId, postId });
+      }
+
+      return reply.send({ ok: true, data: { hiddenOnProfile: true } });
+    },
+  );
+
+  app.post(
+    '/api/v1/posts/:id/not-going',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId);
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const calendarEntry = await CalendarModel.findOne({ postId, userId });
+      if (calendarEntry) {
+        await calendarEntry.deleteOne();
+        await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
+      }
+
+      let status = post.status;
+      if (String(post.authorId) === userId && post.status === 'going') {
+        post.status = 'interested';
+        await post.save();
+        status = 'interested';
+      }
+
+      return reply.send({
+        ok: true,
+        data: { inCalendar: false, status },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/posts/:id',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      if (String(post.authorId) !== userId) {
+        return reply.status(403).send({ ok: false, error: { message: 'Only the author can delete this event' } });
+      }
+
+      await Promise.all([
+        LikeModel.deleteMany({ postId }),
+        BookmarkModel.deleteMany({ postId }),
+        CalendarModel.deleteMany({ postId }),
+        NotificationModel.deleteMany({ postId }),
+        ProfileCalendarHiddenModel.deleteMany({ postId }),
+        PostModel.deleteOne({ _id: postId }),
+      ]);
+
+      return reply.send({ ok: true, data: { deleted: true } });
+    },
+  );
+
+  const postReportSchema = z
+    .object({
+      type: z.enum(['event_cancelled', 'spam', 'bug']),
+      details: z.string().max(2000).optional(),
+    })
+    .superRefine((data, ctx) => {
+      const text = data.details?.trim() ?? '';
+      if (data.type === 'bug' && text.length < 3) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Bug report requires a description (at least 3 characters)',
+          path: ['details'],
+        });
+      }
+    });
+
+  app.post(
+    '/api/v1/posts/:id/reports',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const parsed = postReportSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const details = parsed.data.details?.trim() ?? '';
+      const existing = await PostReportModel.findOne({
+        reporterId: userId,
+        postId,
+        type: parsed.data.type,
+      });
+      if (existing) {
+        return reply.status(409).send({
+          ok: false,
+          error: { message: 'You already submitted this report for this event' },
+        });
+      }
+
+      await PostReportModel.create({
+        reporterId: userId,
+        postId,
+        type: parsed.data.type,
+        details,
+      });
+
+      return reply.send({
+        ok: true,
+        data: {
+          reported: true,
+          type: parsed.data.type,
+          thankYou: parsed.data.type === 'bug',
+        },
+      });
     },
   );
 }

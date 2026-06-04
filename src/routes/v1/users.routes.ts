@@ -6,12 +6,14 @@ import { BookmarkModel } from '../../models/bookmark.model.js';
 import { CalendarModel } from '../../models/calendar.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
+import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { computeMemberBadge, formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 
 type LeanPost = {
   _id: Types.ObjectId;
+  authorId: Types.ObjectId;
   location: string;
   country?: string;
   status: string;
@@ -30,6 +32,11 @@ function mapPostToCalendarItem(
   post: LeanPost,
   source: 'authored' | 'calendar',
   bookmarked: boolean,
+  extras?: {
+    isAuthoredByViewer?: boolean;
+    inCalendar?: boolean;
+    hiddenOnProfile?: boolean;
+  },
 ) {
   const date =
     parseEventDateToIso(post.eventDetails?.date) ??
@@ -46,6 +53,9 @@ function mapPostToCalendarItem(
     time: post.eventDetails?.time ?? null,
     source,
     bookmarked,
+    isAuthoredByMe: extras?.isAuthoredByViewer ?? false,
+    inCalendar: extras?.inCalendar ?? false,
+    hiddenOnProfile: extras?.hiddenOnProfile ?? false,
   };
 }
 
@@ -203,7 +213,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
 
       const authored = await PostModel.find({ authorId: user._id })
-        .select('location status imageUrl createdAt eventDetails country isPrivate')
+        .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
         .sort({ createdAt: -1 })
         .lean();
 
@@ -211,22 +221,30 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         ? authored
         : authored.filter((post) => !post.isPrivate);
 
+      const hiddenOnProfile = await ProfileCalendarHiddenModel.find({ profileUserId: user._id })
+        .select('postId')
+        .lean();
+      const hiddenSet = new Set(hiddenOnProfile.map((h) => String(h.postId)));
+
+      const profileCalendar = await CalendarModel.find({ userId: user._id }).select('postId').lean();
+      const profileCalendarSet = new Set(profileCalendar.map((c) => String(c.postId)));
+
       const postIds = new Set<string>();
       const mergedPosts: Array<{ post: LeanPost; source: 'authored' | 'calendar' }> = [];
 
       for (const post of visibleAuthored) {
         const id = String(post._id);
+        if (!isOwnProfile && hiddenSet.has(id)) continue;
         if (postIds.has(id)) continue;
         postIds.add(id);
         mergedPosts.push({ post: post as LeanPost, source: 'authored' });
       }
 
       if (isOwnProfile) {
-        const saved = await CalendarModel.find({ userId: user._id }).select('postId').lean();
-        const savedIds = saved.map((entry) => entry.postId);
+        const savedIds = profileCalendar.map((entry) => entry.postId);
         if (savedIds.length > 0) {
           const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
-            .select('location status imageUrl createdAt eventDetails country isPrivate')
+            .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
             .lean();
           for (const post of savedPosts) {
             const id = String(post._id);
@@ -251,9 +269,14 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
 
       const items = mergedPosts
-        .map(({ post, source }) =>
-          mapPostToCalendarItem(post, source, bookmarkedSet.has(String(post._id))),
-        )
+        .map(({ post, source }) => {
+          const id = String(post._id);
+          return mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
+            isAuthoredByViewer: isOwnProfile && String(post.authorId) === viewerId,
+            inCalendar: profileCalendarSet.has(id),
+            hiddenOnProfile: hiddenSet.has(id),
+          });
+        })
         .filter((item) => item.date != null);
 
       return reply.send({ ok: true, data: { items } });
