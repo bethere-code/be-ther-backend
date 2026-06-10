@@ -9,6 +9,36 @@ const userSettingsSchema = new Schema(
   { _id: false },
 );
 
+const devicePermissionEntrySchema = new Schema(
+  {
+    /** Whether the OS permission is effectively enabled (granted / limited / provisional). */
+    granted: { type: Boolean, default: false },
+    status: {
+      type: String,
+      enum: [
+        'granted',
+        'denied',
+        'limited',
+        'provisional',
+        'permanently_denied',
+        'restricted',
+        'unknown',
+      ],
+      default: 'unknown',
+    },
+    updatedAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
+const devicePermissionsSchema = new Schema(
+  {
+    notification: { type: devicePermissionEntrySchema, default: () => ({}) },
+    location: { type: devicePermissionEntrySchema, default: () => ({}) },
+  },
+  { _id: false },
+);
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
@@ -27,6 +57,7 @@ const userSchema = new Schema(
     eventsAttended: { type: Number, default: 0 },
     tokenVersion: { type: Number, default: 0 },
     settings: { type: userSettingsSchema, default: () => ({}) },
+    devicePermissions: { type: devicePermissionsSchema, default: () => ({}) },
   },
   { timestamps: true },
 );

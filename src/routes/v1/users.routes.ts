@@ -80,7 +80,7 @@ async function enrichUserForViewer(
   }
 
   const starsReceived = Number(user.starsReceived ?? 0);
-  return {
+  const payload: Record<string, unknown> = {
     ...user,
     isOwnProfile,
     isStarredByMe,
@@ -88,6 +88,10 @@ async function enrichUserForViewer(
     badge: computeMemberBadge(starsReceived),
     joined: formatJoinedDate(user.createdAt as Date | string | undefined),
   };
+  if (!isOwnProfile) {
+    delete payload.devicePermissions;
+  }
+  return payload;
 }
 
 const patchUserSchema = z.object({
@@ -102,6 +106,26 @@ const patchUserSchema = z.object({
     })
     .optional(),
 });
+
+const permissionStatusSchema = z.enum([
+  'granted',
+  'denied',
+  'limited',
+  'provisional',
+  'permanently_denied',
+  'restricted',
+  'unknown',
+]);
+
+const syncDevicePermissionsSchema = z.object({
+  notification: permissionStatusSchema,
+  location: permissionStatusSchema,
+});
+
+function permissionEntryFromStatus(status: z.infer<typeof permissionStatusSchema>) {
+  const granted = status === 'granted' || status === 'limited' || status === 'provisional';
+  return { granted, status, updatedAt: new Date() };
+}
 
 export async function registerUsersV1Routes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -140,6 +164,38 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
       await user.save();
       return reply.send({ ok: true, data: user.toJSON() });
+    },
+  );
+
+  app.patch(
+    '/api/v1/users/me/device-permissions',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const parsed = syncDevicePermissionsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      const user = await UserModel.findById(req.userId);
+      if (!user) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+
+      const current = (user.toObject().devicePermissions ?? {}) as Record<string, unknown>;
+      user.set('devicePermissions', {
+        ...current,
+        notification: permissionEntryFromStatus(parsed.data.notification),
+        location: permissionEntryFromStatus(parsed.data.location),
+      });
+      user.markModified('devicePermissions');
+      await user.save();
+
+      return reply.send({
+        ok: true,
+        data: {
+          devicePermissions: user.toObject().devicePermissions,
+        },
+      });
     },
   );
 
