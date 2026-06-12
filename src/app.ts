@@ -64,5 +64,23 @@ export async function buildApp(env: Env) {
     req.log.error(`${reply.statusCode} ${req.method} ${req.url} - ${err.message}`);
   });
 
+  app.setErrorHandler((error, request, reply) => {
+    if (reply.sent) return;
+    const err = error as { code?: string; statusCode?: number; message?: string };
+    if (err.code === 'FST_REQ_FILE_TOO_LARGE') {
+      void reply.status(413).send({
+        ok: false,
+        error: { message: 'File too large. Maximum size is 8 MB.' },
+      });
+      return;
+    }
+    request.log.error(error);
+    const status = err.statusCode ?? 500;
+    void reply.status(status).send({
+      ok: false,
+      error: { message: err.message || 'Request failed' },
+    });
+  });
+
   return app;
 }
