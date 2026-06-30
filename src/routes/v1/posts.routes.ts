@@ -12,6 +12,7 @@ import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
+import { isPostEventPast } from '../../utils/event-date.js';
 
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
@@ -235,6 +236,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.send({ ok: true, data: { inCalendar: false } });
       }
 
+      if (isPostEventPast(post)) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: 'Cannot add past events to calendar' },
+        });
+      }
+
       await CalendarModel.create({ postId, userId });
       await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
 
@@ -301,6 +309,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const post = await PostModel.findById(postId);
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      if (isPostEventPast(post)) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: 'Cannot change attendance for past events' },
+        });
       }
 
       const calendarEntry = await CalendarModel.findOne({ postId, userId });

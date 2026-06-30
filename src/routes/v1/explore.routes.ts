@@ -6,6 +6,7 @@ import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
+import { isPostEventPast } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
 
 async function mutualStarExists(a: string, b: string): Promise<boolean> {
@@ -22,20 +23,35 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       const q = req.query as { skip?: string };
       const skip = Math.max(0, Number(q.skip ?? 0) || 0);
       const limit = 50;
+      const batchSize = 80;
+      const maxScan = 400;
+      const upcoming: Record<string, unknown>[] = [];
+      let cursor = 0;
 
-      const posts = await PostModel.find({
-        $or: [{ isPrivate: false }, { authorId: req.userId }],
-      })
-        .sort({ likesCount: -1, createdAt: -1, _id: -1 })
-        .skip(skip)
-        .limit(limit)
-        .populate('authorId', 'username displayName avatarUrl starsReceived')
-        .lean();
+      while (upcoming.length < skip + limit + 1 && cursor < maxScan) {
+        const batch = await PostModel.find({
+          $or: [{ isPrivate: false }, { authorId: req.userId }],
+        })
+          .sort({ likesCount: -1, createdAt: -1, _id: -1 })
+          .skip(cursor)
+          .limit(batchSize)
+          .populate('authorId', 'username displayName avatarUrl starsReceived')
+          .lean();
 
-      const enriched = await enrichPostsForViewer(posts as never[], req.userId!);
-      const items = enriched.map(mapPostToExploreItem);
+        if (batch.length === 0) break;
+        cursor += batch.length;
 
-      const hasMore = posts.length === limit;
+        const enriched = await enrichPostsForViewer(batch as never[], req.userId!);
+        for (const post of enriched) {
+          if (!isPostEventPast(post as never)) upcoming.push(post);
+        }
+
+        if (batch.length < batchSize) break;
+      }
+
+      const page = upcoming.slice(skip, skip + limit);
+      const items = page.map(mapPostToExploreItem);
+      const hasMore = upcoming.length > skip + limit;
       return reply.send({
         ok: true,
         data: { items, nextSkip: hasMore ? skip + limit : null },

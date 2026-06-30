@@ -1,6 +1,9 @@
+import { isPostEventPast } from './event-date.js';
+
 /** Maps an enriched feed post into the explore grid / sheet shape. */
 export function mapPostToExploreItem(post: Record<string, unknown>): Record<string, unknown> {
   const eventDetails = post.eventDetails as Record<string, unknown> | undefined;
+  const isPast = (post.isEventPast as boolean | undefined) ?? isPostEventPast(post as never);
   const likesCount = Number(post.likesCount ?? 0);
   const location = String(post.location ?? '');
   const createdAt = post.createdAt;
@@ -39,5 +42,6 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     liked: post.liked ?? false,
     bookmarked: post.bookmarked ?? false,
     inCalendar: post.inCalendar ?? false,
+    isPast,
   };
 }

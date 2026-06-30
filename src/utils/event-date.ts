@@ -56,3 +56,52 @@ export function formatJoinedDate(createdAt?: Date | string): string {
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
+
+function todayIsoLocal(now: Date): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** True when the event date (and optional time) is before now. */
+export function isEventPast(
+  dateRaw?: string | null,
+  timeRaw?: string | null,
+  now: Date = new Date(),
+): boolean {
+  const iso = parseEventDateToIso(dateRaw);
+  if (!iso) return false;
+
+  const today = todayIsoLocal(now);
+  if (iso < today) return true;
+  if (iso > today) return false;
+
+  const time = timeRaw?.trim();
+  if (!time) return false;
+
+  const parsed = Date.parse(`${iso}T${time}`);
+  if (!Number.isNaN(parsed)) return parsed < now.getTime();
+
+  const fallback = Date.parse(`${iso} ${time}`);
+  if (!Number.isNaN(fallback)) return fallback < now.getTime();
+
+  return false;
+}
+
+type PostLike = {
+  eventDetails?: { date?: string | null; time?: string | null } | null;
+  createdAt?: Date | string;
+};
+
+/** Resolves the calendar date for a post and checks if the event has ended. */
+export function isPostEventPast(post: PostLike, now: Date = new Date()): boolean {
+  const ed = post.eventDetails ?? undefined;
+  const iso =
+    parseEventDateToIso(ed?.date) ??
+    (post.createdAt
+      ? new Date(post.createdAt).toISOString().slice(0, 10)
+      : null);
+  if (!iso) return false;
+  return isEventPast(iso, ed?.time ?? undefined, now);
+}

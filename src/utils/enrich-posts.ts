@@ -4,7 +4,7 @@ import { BookmarkModel } from '../models/bookmark.model.js';
 import { CalendarModel } from '../models/calendar.model.js';
 import { ExploreBookmarkModel } from '../models/explore-bookmark.model.js';
 import { LikeModel } from '../models/like.model.js';
-import { computeMemberBadge } from './event-date.js';
+import { computeMemberBadge, isPostEventPast } from './event-date.js';
 
 type PopulatedAuthor = {
   _id?: Types.ObjectId;
@@ -65,6 +65,7 @@ export async function enrichPostsForViewer(
       liked: likedSet.has(id),
       bookmarked: bookmarkedSet.has(id),
       inCalendar: calendarSet.has(id),
+      isEventPast: isPostEventPast(post as Parameters<typeof isPostEventPast>[0]),
     };
   });
 }

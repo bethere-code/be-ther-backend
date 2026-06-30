@@ -108,13 +108,16 @@ export async function checkSignupAvailability(input: {
   const result: SignupAvailabilityResult = {};
 
   if (input.username != null) {
+    console.log('input.username', input.username);
     const username = input.username.toLowerCase().trim();
     if (username.length < 3) {
       result.username = { available: false, reason: 'Username must be at least 3 characters' };
     } else if (!USERNAME_SIGNUP_REGEX.test(username)) {
       result.username = { available: false, reason: 'Username: lowercase letters and digits only' };
     } else {
+      console.log('username', username);
       const exists = await UserModel.exists({ username });
+      console.log('exists', exists);
       result.username = exists ? { available: false, reason: 'Username already exists' } : { available: true };
     }
   }
