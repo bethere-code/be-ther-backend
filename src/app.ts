@@ -8,6 +8,7 @@ import path from 'path';
 
 import type { Env } from './config/env.js';
 import { registerHealthRoutes } from './routes/health.js';
+import { registerShareRoutes } from './routes/share.routes.js';
 import { registerV1Api } from './routes/v1/index.js';
 
 export async function buildApp(env: Env) {
@@ -32,7 +33,16 @@ export async function buildApp(env: Env) {
     disableRequestLogging: true,
   });
 
-  await app.register(helmet);
+  await app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:', 'http:'],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+      },
+    },
+  });
   await app.register(cors, { origin: true });
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
@@ -50,6 +60,7 @@ export async function buildApp(env: Env) {
   });
 
   await registerHealthRoutes(app);
+  await registerShareRoutes(app, env);
   await registerV1Api(app, env);
 
   app.addHook('onRequest', async (req) => {

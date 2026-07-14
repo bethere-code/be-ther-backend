@@ -27,6 +27,8 @@ const schema = z
 
     MEDIA_STORAGE: z.enum(['local', 'r2']).default('local'),
     PUBLIC_BASE_URL: z.string().default('http://127.0.0.1:3000'),
+    /** Public web origin for share links (OG previews). e.g. https://be-ther.com */
+    SHARE_WEB_BASE_URL: z.string().optional(),
 
     R2_ACCOUNT_ID: z.string().optional(),
     R2_ACCESS_KEY_ID: z.string().optional(),

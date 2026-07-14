@@ -101,6 +101,33 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/api/v1/posts/:id',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findOne({
+        _id: postId,
+        $or: [{ isPrivate: false }, { authorId: userId }],
+      })
+        .populate('authorId', 'username displayName avatarUrl starsReceived')
+        .lean();
+
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const [enriched] = await enrichPostsForViewer([post as never], userId);
+      return reply.send({ ok: true, data: { post: enriched } });
+    },
+  );
+
   app.post(
     '/api/v1/posts',
     { preHandler: [app.authenticate] },
