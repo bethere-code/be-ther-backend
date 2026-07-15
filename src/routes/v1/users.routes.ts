@@ -11,9 +11,17 @@ import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { computeMemberBadge, formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 
+type PopulatedAuthor = {
+  _id: Types.ObjectId;
+  username?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  starsReceived?: number;
+};
+
 type LeanPost = {
   _id: Types.ObjectId;
-  authorId: Types.ObjectId;
+  authorId: Types.ObjectId | PopulatedAuthor;
   location: string;
   country?: string;
   status: string;
@@ -27,6 +35,23 @@ type LeanPost = {
   };
   createdAt?: Date;
 };
+
+function mapAuthor(authorId: LeanPost['authorId']) {
+  if (authorId && typeof authorId === 'object' && 'username' in authorId) {
+    const stars = Number(authorId.starsReceived ?? 0);
+    return {
+      _id: String(authorId._id),
+      username: authorId.username ?? '',
+      displayName: authorId.displayName ?? authorId.username ?? '',
+      avatarUrl: authorId.avatarUrl ?? '',
+      badge: computeMemberBadge(stars),
+    };
+  }
+  if (authorId) {
+    return { _id: String(authorId), username: '', displayName: '', avatarUrl: '' };
+  }
+  return null;
+}
 
 function mapPostToCalendarItem(
   post: LeanPost,
@@ -42,13 +67,26 @@ function mapPostToCalendarItem(
     parseEventDateToIso(post.eventDetails?.date) ??
     (post.createdAt ? new Date(post.createdAt).toISOString().slice(0, 10) : null);
 
+  const country = String(post.country ?? '').trim();
+  const venue = String(post.eventDetails?.venue ?? '').trim();
+  const location = String(post.location ?? '').trim();
+  let place = country;
+  if (!place && venue && venue.toLowerCase() !== location.toLowerCase()) {
+    place = venue;
+  } else if (!place) {
+    place = venue;
+  }
+
   return {
     postId: String(post._id),
     date,
-    location: post.location,
+    location,
+    title: location,
     imageUrl: post.imageUrl,
     status: post.status,
-    venue: post.eventDetails?.venue ?? post.country ?? '',
+    venue,
+    country,
+    place: place || null,
     ticketUrl: post.eventDetails?.ticketUrl ?? null,
     time: post.eventDetails?.time ?? null,
     source,
@@ -56,6 +94,7 @@ function mapPostToCalendarItem(
     isAuthoredByMe: extras?.isAuthoredByViewer ?? false,
     inCalendar: extras?.inCalendar ?? false,
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
+    authorId: mapAuthor(post.authorId),
   };
 }
 
@@ -270,6 +309,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
 
       const authored = await PostModel.find({ authorId: user._id })
         .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
+        .populate('authorId', 'username displayName avatarUrl starsReceived')
         .sort({ createdAt: -1 })
         .lean();
 
@@ -301,6 +341,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (savedIds.length > 0) {
           const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
             .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
+            .populate('authorId', 'username displayName avatarUrl starsReceived')
             .lean();
           for (const post of savedPosts) {
             const id = String(post._id);
@@ -327,8 +368,12 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       const items = mergedPosts
         .map(({ post, source }) => {
           const id = String(post._id);
+          const authorId =
+            post.authorId && typeof post.authorId === 'object' && '_id' in post.authorId
+              ? String((post.authorId as PopulatedAuthor)._id)
+              : String(post.authorId);
           return mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
-            isAuthoredByViewer: isOwnProfile && String(post.authorId) === viewerId,
+            isAuthoredByViewer: String(authorId) === viewerId,
             inCalendar: profileCalendarSet.has(id),
             hiddenOnProfile: hiddenSet.has(id),
           });

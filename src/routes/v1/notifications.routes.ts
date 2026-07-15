@@ -10,7 +10,7 @@ export async function registerNotificationsV1Routes(app: FastifyInstance): Promi
       const items = await NotificationModel.find({ userId: req.userId })
         .sort({ createdAt: -1 })
         .limit(100)
-        .populate('actorUserId', 'username displayName avatarUrl')
+        .populate('actorUserId', 'username displayName avatarUrl badge')
         .populate('postId', 'location imageUrl caption status eventDetails')
         .lean();
       return reply.send({ ok: true, data: { items } });

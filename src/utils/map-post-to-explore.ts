@@ -20,14 +20,23 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
 
   const country = String(post.country ?? '').trim();
   const venue = String(eventDetails?.venue ?? '').trim();
+  // Prefer country, then venue (when it isn't just a copy of the event title).
+  let place = country;
+  if (!place && venue && venue.toLowerCase() !== location.toLowerCase()) {
+    place = venue;
+  } else if (!place) {
+    place = venue;
+  }
 
   return {
     _id: String(post._id),
     postId: String(post._id),
     source: 'post',
     title: location,
-    location: country.length > 0 ? country : location,
+    // Keep `location` as place-or-title for older clients; prefer `place` / `country`.
+    location: place || location,
     country,
+    place: place || null,
     image: String(post.imageUrl ?? ''),
     date,
     venue,
