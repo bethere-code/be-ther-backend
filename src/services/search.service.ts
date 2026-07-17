@@ -3,7 +3,7 @@ import { Types } from 'mongoose';
 import { PostModel } from '../models/post.model.js';
 import { UserModel } from '../models/user.model.js';
 import { enrichPostsForViewer } from '../utils/enrich-posts.js';
-import { parseEventDateToIso } from '../utils/event-date.js';
+import { isPostEventPast, parseEventDateToIso } from '../utils/event-date.js';
 
 const MONTH_NAMES = [
   'january',
@@ -35,9 +35,25 @@ const MONTH_ABBR = [
   'dec',
 ] as const;
 
-/** Escape a string for safe use inside a MongoDB regex. */
+/** Match priority — higher wins. Past events are always pushed below. */
+const SCORE = {
+  EVENT_NAME: 4000,
+  DESCRIPTION: 3000,
+  PLACE: 2000,
+  AUTHOR: 500,
+  DATE: 1000,
+  PAST_PENALTY: 100_000,
+} as const;
+
+const MAX_CANDIDATES = 400;
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function containsInsensitive(haystack: unknown, needle: string): boolean {
+  if (typeof haystack !== 'string' || !haystack.trim() || !needle) return false;
+  return haystack.toLowerCase().includes(needle.toLowerCase());
 }
 
 /**
@@ -51,10 +67,7 @@ export function parseSearchDateQuery(raw: string): string | null {
   const fromHelper = parseEventDateToIso(trimmed);
   if (fromHelper) return fromHelper;
 
-  // "22 June 2026" / "22 Jun 2026"
-  const dayFirst = trimmed.match(
-    /^(\d{1,2})\s+([A-Za-z]+)(?:\s+|,\s*)(\d{4})$/,
-  );
+  const dayFirst = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+|,\s*)(\d{4})$/);
   if (dayFirst) {
     const day = Number(dayFirst[1]);
     const monthRaw = dayFirst[2]!.slice(0, 3).toLowerCase();
@@ -65,10 +78,7 @@ export function parseSearchDateQuery(raw: string): string | null {
     }
   }
 
-  // "June 22 2026" (no comma)
-  const monthFirst = trimmed.match(
-    /^([A-Za-z]+)\s+(\d{1,2})(?:\s+|,\s*)(\d{4})$/,
-  );
+  const monthFirst = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2})(?:\s+|,\s*)(\d{4})$/);
   if (monthFirst) {
     const monthRaw = monthFirst[1]!.slice(0, 3).toLowerCase();
     const day = Number(monthFirst[2]);
@@ -82,7 +92,6 @@ export function parseSearchDateQuery(raw: string): string | null {
   return null;
 }
 
-/** Alternate date strings we might have stored or a user might type. */
 function dateSearchVariants(iso: string): string[] {
   const [y, m, d] = iso.split('-').map(Number);
   if (!y || !m || !d) return [iso];
@@ -105,6 +114,85 @@ function dateSearchVariants(iso: string): string[] {
   ];
 }
 
+function dateFieldMatches(
+  dateRaw: unknown,
+  query: string,
+  iso: string | null,
+  variants: string[],
+): boolean {
+  if (typeof dateRaw !== 'string' || !dateRaw.trim()) return false;
+  if (containsInsensitive(dateRaw, query)) return true;
+  if (iso && (dateRaw === iso || dateRaw.startsWith(iso))) return true;
+  const lower = dateRaw.toLowerCase();
+  return variants.some((v) => lower.includes(v.toLowerCase()));
+}
+
+type ScoredPost = Record<string, unknown> & {
+  _id: Types.ObjectId;
+  createdAt?: Date | string;
+};
+
+function authorIdOf(post: Record<string, unknown>): string {
+  const author = post.authorId;
+  if (!author) return '';
+  if (typeof author === 'object' && author !== null && '_id' in author) {
+    return String((author as { _id: unknown })._id);
+  }
+  return String(author);
+}
+
+/**
+ * Ranking:
+ * 1. Event name (DB `location`)
+ * 2. Description (`caption`)
+ * 3. Place (`country` / venue)
+ * 4. Date
+ * Past events always sink below upcoming, regardless of match field.
+ */
+export function scoreSearchHit(
+  post: Record<string, unknown>,
+  query: string,
+  opts: {
+    isoDate: string | null;
+    dateVariants: string[];
+    authorIds: Set<string>;
+  },
+): number {
+  const q = query.trim();
+  const details = post.eventDetails as { venue?: string; date?: string } | undefined;
+
+  let match = 0;
+  // 1 — event name / title
+  if (containsInsensitive(post.location, q)) {
+    match = Math.max(match, SCORE.EVENT_NAME);
+  }
+  // 2 — description
+  if (containsInsensitive(post.caption, q)) {
+    match = Math.max(match, SCORE.DESCRIPTION);
+  }
+  // 3 — city / venue (place)
+  if (containsInsensitive(post.country, q) || containsInsensitive(details?.venue, q)) {
+    match = Math.max(match, SCORE.PLACE);
+  }
+  // 4 — date
+  if (dateFieldMatches(details?.date, q, opts.isoDate, opts.dateVariants)) {
+    match = Math.max(match, SCORE.DATE);
+  }
+  // Author / artist-style (kept, below place)
+  if (opts.authorIds.has(authorIdOf(post))) {
+    match = Math.max(match, SCORE.AUTHOR);
+  }
+
+  const past = isPostEventPast(post as Parameters<typeof isPostEventPast>[0]);
+  return past ? match - SCORE.PAST_PENALTY : match;
+}
+
+function createdAtMs(post: ScoredPost): number {
+  if (!post.createdAt) return 0;
+  const t = new Date(post.createdAt).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
 export type SearchPostsParams = {
   query: string;
   country?: string;
@@ -119,9 +207,8 @@ export type SearchPostsResult = {
 };
 
 /**
- * Multi-field event search:
- * event name (location), city (country), description (caption),
- * venue, event date, and creator / artist-style author name.
+ * Multi-field event search with priority ranking.
+ * Event name > description > place > date; past events always last.
  */
 export async function searchPosts(params: SearchPostsParams): Promise<SearchPostsResult> {
   const query = params.query.trim();
@@ -149,8 +236,9 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   ];
 
   const isoDate = parseSearchDateQuery(query);
+  const dateVariants = isoDate ? dateSearchVariants(isoDate) : [];
   if (isoDate) {
-    for (const variant of dateSearchVariants(isoDate)) {
+    for (const variant of dateVariants) {
       fieldMatchers.push({
         'eventDetails.date': {
           $regex: escapeRegex(variant),
@@ -158,11 +246,9 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
         },
       });
     }
-    // Exact ISO match (common storage format from create-post)
     fieldMatchers.push({ 'eventDetails.date': isoDate });
   }
 
-  // Creator / artist-style match on author username + displayName
   const matchingAuthors = await UserModel.find({
     $or: [{ username: textRegex }, { displayName: textRegex }],
   })
@@ -170,6 +256,7 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
     .limit(50)
     .lean();
 
+  const authorIds = new Set(matchingAuthors.map((u) => String(u._id)));
   if (matchingAuthors.length > 0) {
     fieldMatchers.push({
       authorId: { $in: matchingAuthors.map((u) => u._id) },
@@ -187,15 +274,23 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
     ];
   }
 
-  const posts = await PostModel.find(filter)
+  // Pull a candidate pool, rank in memory, then page — skip before rank would break priority.
+  const candidates = (await PostModel.find(filter)
     .sort({ createdAt: -1, _id: -1 })
-    .skip(skip)
-    .limit(limit + 1)
+    .limit(MAX_CANDIDATES)
     .populate('authorId', 'username displayName avatarUrl starsReceived')
-    .lean();
+    .lean()) as ScoredPost[];
 
-  const page = posts.slice(0, limit);
-  const hasMore = posts.length > limit;
+  const scoreOpts = { isoDate, dateVariants, authorIds };
+  const ranked = [...candidates].sort((a, b) => {
+    const diff =
+      scoreSearchHit(b, query, scoreOpts) - scoreSearchHit(a, query, scoreOpts);
+    if (diff !== 0) return diff;
+    return createdAtMs(b) - createdAtMs(a);
+  });
+
+  const page = ranked.slice(skip, skip + limit);
+  const hasMore = ranked.length > skip + limit;
   const enriched = await enrichPostsForViewer(page as never[], params.viewerId);
 
   return {

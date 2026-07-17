@@ -156,8 +156,10 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       });
       await UserModel.updateOne({ _id: authorId }, { $inc: { placesVisited: 1 } });
 
+      // Only "going" (attending) lands on the author's calendar.
+      // "interested" = curious, not confirmed — no calendar entry.
       let inCalendar = false;
-      if (parsed.data.addToCalendar) {
+      if (parsed.data.status === 'going') {
         const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
         if (!existing) {
           await CalendarModel.create({ postId: post._id, userId: authorId });
