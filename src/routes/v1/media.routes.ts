@@ -13,6 +13,11 @@ const linkPreviewQuery = z.object({
 });
 
 export async function registerMediaV1Routes(app: FastifyInstance, env: Env): Promise<void> {
+  /**
+   * Resolve Open Graph / Twitter preview image for external ticket links
+   * (BookMyShow, District, Eventbrite, …). Must run on the server — same
+   * reason WhatsApp previews work: phone HTTP clients are often blocked.
+   */
   app.get(
     '/api/v1/link-preview',
     { preHandler: [app.authenticate] },
