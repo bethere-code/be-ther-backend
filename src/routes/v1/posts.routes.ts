@@ -13,13 +13,26 @@ import { ProfileStarModel } from '../../models/profile-star.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
+import { searchPosts } from '../../services/search.service.js';
+
+function countWords(value: string): number {
+  return value.trim().split(/\s+/).filter(Boolean).length;
+}
+
+const captionSchema = z
+  .string()
+  .max(20000)
+  .optional()
+  .refine((value) => !value || countWords(value) <= 2000, {
+    message: 'Description must be less than 2000 words',
+  });
 
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
   country: z.string().max(200).optional(),
   status: z.enum(['been', 'going', 'interested']),
   imageUrl: z.string().min(4),
-  caption: z.string().max(2000).optional(),
+  caption: captionSchema,
   isPrivate: z.boolean().optional(),
   taggedUsernames: z.array(z.string()).max(20).optional(),
   addToCalendar: z.boolean().optional(),
@@ -73,31 +86,19 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const query = q.query?.trim() ?? '';
       const country = q.country?.trim();
       const skip = Math.max(0, Number(q.skip ?? 0) || 0);
-      const limit = 10;
 
-      const filter: any = {
-        $or: [{ isPrivate: false }, { authorId: req.userId }],
-      };
+      const result = await searchPosts({
+        query,
+        country: country || undefined,
+        viewerId: req.userId!,
+        skip,
+        limit: 10,
+      });
 
-      if (query) {
-        filter.location = { $regex: query, $options: 'i' };
-      }
-
-      if (country) {
-        filter.country = country;
-      }
-
-      const posts = await PostModel.find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip(skip)
-        .limit(limit + 1)
-        .populate('authorId', 'username displayName avatarUrl starsReceived')
-        .lean();
-
-      const page = posts.slice(0, limit);
-      const hasMore = posts.length > limit;
-      const enriched = await enrichPostsForViewer(page as never[], req.userId!);
-      return reply.send({ ok: true, data: { items: enriched, nextSkip: hasMore ? skip + limit : null } });
+      return reply.send({
+        ok: true,
+        data: { items: result.items, nextSkip: result.nextSkip },
+      });
     },
   );
 

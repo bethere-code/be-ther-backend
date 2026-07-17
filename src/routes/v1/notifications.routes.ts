@@ -41,4 +41,16 @@ export async function registerNotificationsV1Routes(app: FastifyInstance): Promi
       return reply.send({ ok: true, data: { read: true } });
     },
   );
+
+  app.patch(
+    '/api/v1/notifications/read-all',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      await NotificationModel.updateMany(
+        { userId: req.userId, read: false },
+        { $set: { read: true } },
+      );
+      return reply.send({ ok: true, data: { read: true } });
+    },
+  );
 }
