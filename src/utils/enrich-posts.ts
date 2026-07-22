@@ -4,14 +4,13 @@ import { BookmarkModel } from '../models/bookmark.model.js';
 import { CalendarModel } from '../models/calendar.model.js';
 import { ExploreBookmarkModel } from '../models/explore-bookmark.model.js';
 import { LikeModel } from '../models/like.model.js';
-import { computeMemberBadge, isPostEventPast } from './event-date.js';
+import { isPostEventPast } from './event-date.js';
 
 type PopulatedAuthor = {
   _id?: Types.ObjectId;
   username?: string;
   displayName?: string;
   avatarUrl?: string;
-  starsReceived?: number;
 };
 
 type LeanPost = Record<string, unknown> & {
@@ -19,19 +18,22 @@ type LeanPost = Record<string, unknown> & {
   authorId?: PopulatedAuthor | Types.ObjectId;
 };
 
-function enrichAuthor(authorRaw: PopulatedAuthor | Types.ObjectId | undefined): PopulatedAuthor & { badge: ReturnType<typeof computeMemberBadge> } {
+function enrichAuthor(
+  authorRaw: PopulatedAuthor | Types.ObjectId | undefined,
+): PopulatedAuthor & { badge: null } {
   if (!authorRaw || authorRaw instanceof Types.ObjectId) {
     return {
       username: '',
       displayName: '',
       avatarUrl: '',
+      // badge: paused
       badge: null,
     };
   }
-  const starsReceived = Number(authorRaw.starsReceived ?? 0);
   return {
     ...authorRaw,
-    badge: computeMemberBadge(starsReceived),
+    // badge: paused — restore with multi-signal computeMemberBadge later
+    badge: null,
   };
 }
 

@@ -4,16 +4,10 @@ import { Types } from 'mongoose';
 import { BookmarkModel } from '../../models/bookmark.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
-import { ProfileStarModel } from '../../models/profile-star.model.js';
+import { areMutualFollowers } from '../../services/follow.service.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
-
-async function mutualStarExists(a: string, b: string): Promise<boolean> {
-  const one = await ProfileStarModel.exists({ fromUserId: a, toUserId: b });
-  const two = await ProfileStarModel.exists({ fromUserId: b, toUserId: a });
-  return Boolean(one && two);
-}
 
 export async function registerExploreV1Routes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -35,7 +29,7 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
           .sort({ likesCount: -1, createdAt: -1, _id: -1 })
           .skip(cursor)
           .limit(batchSize)
-          .populate('authorId', 'username displayName avatarUrl starsReceived')
+          .populate('authorId', 'username displayName avatarUrl')
           .lean();
 
         if (batch.length === 0) break;
@@ -84,13 +78,13 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
 
       await BookmarkModel.create({ postId, userId });
       if (String(post.authorId) !== userId) {
-        const mutual = await mutualStarExists(userId, String(post.authorId));
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
         await NotificationModel.create({
           userId: post.authorId,
           type: 'wishlist',
           actorUserId: userId,
           postId,
-          mutualStar: mutual,
+          mutualFollow: mutual,
         });
       }
 

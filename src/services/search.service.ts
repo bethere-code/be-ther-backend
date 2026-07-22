@@ -278,7 +278,7 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   const candidates = (await PostModel.find(filter)
     .sort({ createdAt: -1, _id: -1 })
     .limit(MAX_CANDIDATES)
-    .populate('authorId', 'username displayName avatarUrl starsReceived')
+    .populate('authorId', 'username displayName avatarUrl')
     .lean()) as ScoredPost[];
 
   const scoreOpts = { isoDate, dateVariants, authorIds };

@@ -43,10 +43,14 @@ export function parseEventDateToIso(raw?: string | null): string | null {
   return null;
 }
 
-export function computeMemberBadge(starsReceived: number): 'blue' | 'silver' | 'gold' | null {
-  if (starsReceived >= 2500) return 'gold';
-  if (starsReceived >= 1200) return 'blue';
-  if (starsReceived >= 400) return 'silver';
+/**
+ * Member badges — paused for now.
+ * Later: combine activity, eventsCount, followersCount, etc.
+ */
+export function computeMemberBadge(_score: number): 'blue' | 'silver' | 'gold' | null {
+  // if (_score >= 2500) return 'gold';
+  // if (_score >= 1200) return 'blue';
+  // if (_score >= 400) return 'silver';
   return null;
 }
 

@@ -52,6 +52,12 @@ const userSchema = new Schema(
     /** bcrypt hash; absent for OAuth-only accounts */
     passwordHash: { type: String, default: '' },
     age: { type: Number, min: 1, max: 120 },
+    /** Denormalized follow graph counts — updated on follow/unfollow (O(1) profile reads). */
+    followersCount: { type: Number, default: 0, min: 0 },
+    followingCount: { type: Number, default: 0, min: 0 },
+    /** Denormalized count of posts/events created by this user. */
+    eventsCount: { type: Number, default: 0, min: 0 },
+    /** @deprecated Legacy “star” counter; kept for old docs. Prefer followersCount. */
     starsReceived: { type: Number, default: 0 },
     placesVisited: { type: Number, default: 0 },
     eventsAttended: { type: Number, default: 0 },

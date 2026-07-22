@@ -9,7 +9,7 @@ import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { PostReportModel } from '../../models/post-report.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
-import { ProfileStarModel } from '../../models/profile-star.model.js';
+import { areMutualFollowers } from '../../services/follow.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
@@ -68,11 +68,6 @@ const createPostSchema = z.object({
   }),
 });
 
-async function mutualStarExists(a: string, b: string): Promise<boolean> {
-  const one = await ProfileStarModel.exists({ fromUserId: a, toUserId: b });
-  const two = await ProfileStarModel.exists({ fromUserId: b, toUserId: a });
-  return Boolean(one && two);
-}
 
 export async function registerPostsV1Routes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -89,7 +84,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit + 1)
-        .populate('authorId', 'username displayName avatarUrl starsReceived')
+        .populate('authorId', 'username displayName avatarUrl')
         .lean();
 
       const page = posts.slice(0, limit);
@@ -138,7 +133,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         _id: postId,
         $or: [{ isPrivate: false }, { authorId: userId }],
       })
-        .populate('authorId', 'username displayName avatarUrl starsReceived')
+        .populate('authorId', 'username displayName avatarUrl')
         .lean();
 
       if (!post) {
@@ -186,7 +181,10 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
           venue: eventDetails.venue?.trim() || eventLocation.name.trim() || undefined,
         },
       });
-      await UserModel.updateOne({ _id: authorId }, { $inc: { placesVisited: 1 } });
+      await UserModel.updateOne(
+        { _id: authorId },
+        { $inc: { placesVisited: 1, eventsCount: 1 } },
+      );
 
       // Only "going" (attending) lands on the author's calendar.
       // "interested" = curious, not confirmed — no calendar entry.
@@ -258,13 +256,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
       await BookmarkModel.create({ postId, userId });
       if (String(post.authorId) !== userId) {
-        const mutual = await mutualStarExists(userId, String(post.authorId));
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
         await NotificationModel.create({
           userId: post.authorId,
           type: 'wishlist',
           actorUserId: userId,
           postId,
-          mutualStar: mutual,
+          mutualFollow: mutual,
         });
       }
       return reply.send({ ok: true, data: { bookmarked: true } });
@@ -309,13 +307,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
 
       if (String(post.authorId) !== userId) {
-        const mutual = await mutualStarExists(userId, String(post.authorId));
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
         await NotificationModel.create({
           userId: post.authorId,
           type: 'calendar',
           actorUserId: userId,
           postId,
-          mutualStar: mutual,
+          mutualFollow: mutual,
         });
       }
 
@@ -427,7 +425,12 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         NotificationModel.deleteMany({ postId }),
         ProfileCalendarHiddenModel.deleteMany({ postId }),
         PostModel.deleteOne({ _id: postId }),
+        UserModel.updateOne({ _id: userId }, { $inc: { eventsCount: -1 } }),
       ]);
+      await UserModel.updateOne(
+        { _id: userId, eventsCount: { $lt: 0 } },
+        { $set: { eventsCount: 0 } },
+      );
 
       return reply.send({ ok: true, data: { deleted: true } });
     },

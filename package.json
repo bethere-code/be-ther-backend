@@ -10,7 +10,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "seed:explore": "tsx src/scripts/seed-explore.ts"
+    "seed:explore": "tsx src/scripts/seed-explore.ts",
+    "migrate:follows": "tsx src/scripts/migrate-follows.ts"
   },
   "keywords": [],
   "author": "",

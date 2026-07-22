@@ -10,7 +10,7 @@ import './models/post.model.js';
 import './models/like.model.js';
 import './models/bookmark.model.js';
 import './models/calendar.model.js';
-import './models/profile-star.model.js';
+import './models/follow.model.js';
 import './models/notification.model.js';
 import './models/explore-event.model.js';
 import './models/explore-bookmark.model.js';
