@@ -118,12 +118,22 @@ async function enrichUserForViewer(
     }
   }
 
+  // Live counts: events created, followers (starred me), following (I starred).
+  const [eventsCount, followersCount, followingCount] = await Promise.all([
+    PostModel.countDocuments({ authorId: userId }),
+    ProfileStarModel.countDocuments({ toUserId: userId }),
+    ProfileStarModel.countDocuments({ fromUserId: userId }),
+  ]);
+
   const starsReceived = Number(user.starsReceived ?? 0);
   const payload: Record<string, unknown> = {
     ...user,
     isOwnProfile,
     isStarredByMe,
     canDM,
+    eventsCount,
+    followersCount,
+    followingCount,
     badge: computeMemberBadge(starsReceived),
     joined: formatJoinedDate(user.createdAt as Date | string | undefined),
   };
@@ -272,7 +282,11 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       if (existing) {
         await existing.deleteOne();
         await UserModel.updateOne({ _id: to }, { $inc: { starsReceived: -1 } });
-        return reply.send({ ok: true, data: { starred: false } });
+        const followersCount = await ProfileStarModel.countDocuments({ toUserId: to });
+        return reply.send({
+          ok: true,
+          data: { starred: false, followersCount },
+        });
       }
       await ProfileStarModel.create({ fromUserId: from, toUserId: to });
       await UserModel.updateOne({ _id: to }, { $inc: { starsReceived: 1 } });
@@ -283,7 +297,11 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         actorUserId: from,
         mutualStar: Boolean(mutual),
       });
-      return reply.send({ ok: true, data: { starred: true } });
+      const followersCount = await ProfileStarModel.countDocuments({ toUserId: to });
+      return reply.send({
+        ok: true,
+        data: { starred: true, followersCount },
+      });
     },
   );
 

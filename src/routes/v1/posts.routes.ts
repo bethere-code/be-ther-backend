@@ -27,6 +27,27 @@ const captionSchema = z
     message: 'Description must be less than 2000 words',
   });
 
+const latLngSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+});
+
+const eventLocationSchema = z.object({
+  placeId: z.string().max(300).optional(),
+  name: z.string().min(1).max(300),
+  formattedAddress: z.string().max(500).optional(),
+  locality: z.string().max(200).optional(),
+  street: z.string().max(300).optional(),
+  area: z.string().max(200).optional(),
+  city: z.string().max(200).optional(),
+  district: z.string().max(200).optional(),
+  state: z.string().max(200).optional(),
+  country: z.string().max(200).optional(),
+  postalCode: z.string().max(40).optional(),
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+});
+
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
   country: z.string().max(200).optional(),
@@ -36,15 +57,15 @@ const createPostSchema = z.object({
   isPrivate: z.boolean().optional(),
   taggedUsernames: z.array(z.string()).max(20).optional(),
   addToCalendar: z.boolean().optional(),
-  eventDetails: z
-    .object({
-      type: z.enum(['event', 'place', 'concert']),
-      date: z.string().optional(),
-      time: z.string().optional(),
-      venue: z.string().optional(),
-      ticketUrl: z.string().optional(),
-    })
-    .optional(),
+  eventDetails: z.object({
+    type: z.enum(['event', 'place', 'concert']),
+    date: z.string().optional(),
+    time: z.string().optional(),
+    venue: z.string().optional(),
+    ticketUrl: z.string().optional(),
+    eventLocation: eventLocationSchema,
+    userLocation: latLngSchema.optional(),
+  }),
 });
 
 async function mutualStarExists(a: string, b: string): Promise<boolean> {
@@ -143,16 +164,27 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         const users = await UserModel.find({ username: { $in: parsed.data.taggedUsernames } }).select('_id');
         taggedIds.push(...users.map((u) => u._id as Types.ObjectId));
       }
+      const eventDetails = parsed.data.eventDetails;
+      const eventLocation = eventDetails.eventLocation;
+      const countryFromPlace =
+        eventLocation.country?.trim() ||
+        eventLocation.city?.trim() ||
+        parsed.data.country?.trim() ||
+        '';
+
       const post = await PostModel.create({
         authorId,
         location: parsed.data.location,
-        country: parsed.data.country ?? '',
+        country: countryFromPlace,
         status: parsed.data.status,
         imageUrl: parsed.data.imageUrl,
         caption: parsed.data.caption ?? '',
         isPrivate: parsed.data.isPrivate ?? false,
         taggedUserIds: taggedIds,
-        eventDetails: parsed.data.eventDetails,
+        eventDetails: {
+          ...eventDetails,
+          venue: eventDetails.venue?.trim() || eventLocation.name.trim() || undefined,
+        },
       });
       await UserModel.updateOne({ _id: authorId }, { $inc: { placesVisited: 1 } });
 

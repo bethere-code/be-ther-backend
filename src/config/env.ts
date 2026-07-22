@@ -14,6 +14,8 @@ const schema = z
     JWT_REFRESH_TTL_SEC: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
 
     GOOGLE_WEB_CLIENT_ID: z.string().min(1),
+    /** Places Autocomplete + Details (+ Geocoding reverse). Server-only — never ship to the app. */
+    GOOGLE_PLACES_API_KEY: z.string().min(10).optional(),
 
     OTP_DEV_LOG: z.coerce.boolean().default(false),
     OTP_TTL_MIN: z.coerce.number().int().positive().default(10),
