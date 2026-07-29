@@ -159,7 +159,7 @@ async function enrichUserForViewer(
 
 const patchUserSchema = z.object({
   displayName: z.string().min(1).max(80).optional(),
-  bio: z.string().max(500).optional(),
+  bio: z.string().max(200).optional(),
   avatarUrl: z.union([z.string().url(), z.literal('')]).optional(),
   settings: z
     .object({

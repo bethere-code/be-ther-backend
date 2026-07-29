@@ -15,17 +15,10 @@ import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
 import { searchPosts } from '../../services/search.service.js';
 
-function countWords(value: string): number {
-  return value.trim().split(/\s+/).filter(Boolean).length;
-}
-
 const captionSchema = z
   .string()
-  .max(20000)
-  .optional()
-  .refine((value) => !value || countWords(value) <= 2000, {
-    message: 'Description must be less than 2000 words',
-  });
+  .max(500, { message: 'Description must be 500 characters or less' })
+  .optional();
 
 const latLngSchema = z.object({
   lat: z.number().min(-90).max(90),
