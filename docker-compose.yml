@@ -21,6 +21,8 @@ services:
     restart: unless-stopped
     volumes:
       - be_ther_mongo_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
 
 volumes:
   be_ther_mongo_data:
