@@ -179,17 +179,14 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         { $inc: { placesVisited: 1, eventsCount: 1 } },
       );
 
-      // Only "going" (attending) lands on the author's calendar.
-      // "interested" = curious, not confirmed — no calendar entry.
+      // Author's own event always lands on their calendar.
       let inCalendar = false;
-      if (parsed.data.status === 'going') {
-        const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
-        if (!existing) {
-          await CalendarModel.create({ postId: post._id, userId: authorId });
-          await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
-        }
-        inCalendar = true;
+      const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
+      if (!existing) {
+        await CalendarModel.create({ postId: post._id, userId: authorId });
+        await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
       }
+      inCalendar = true;
 
       const json = post.toJSON() as Record<string, unknown>;
       return reply.send({
@@ -282,6 +279,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(403).send({ ok: false, error: { message: 'Cannot add private event to calendar' } });
       }
 
+      // Author's event is always on their calendar — no remove.
+      if (String(post.authorId) === userId) {
+        const existingOwn = await CalendarModel.findOne({ postId, userId });
+        if (!existingOwn) {
+          await CalendarModel.create({ postId, userId });
+          await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
+        }
+        return reply.send({ ok: true, data: { inCalendar: true } });
+      }
+
       const existing = await CalendarModel.findOne({ postId, userId });
       if (existing) {
         await existing.deleteOne();
@@ -311,6 +318,80 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
 
       return reply.send({ ok: true, data: { inCalendar: true } });
+    },
+  );
+
+  app.get(
+    '/api/v1/posts/:id/attendees',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+      const q = req.query as { skip?: string };
+      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+      const limit = 40;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const postObjectId = new Types.ObjectId(postId);
+      const post = await PostModel.findById(postObjectId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      if (post.isPrivate && String(post.authorId) !== userId) {
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
+        if (!mutual) {
+          return reply.status(403).send({ ok: false, error: { message: 'Event is private' } });
+        }
+      }
+
+      const [total, rows] = await Promise.all([
+        CalendarModel.countDocuments({ postId: postObjectId }),
+        CalendarModel.find({ postId: postObjectId })
+          .sort({ createdAt: 1, _id: 1 })
+          .skip(skip)
+          .limit(limit)
+          .populate('userId', 'username displayName avatarUrl')
+          .lean(),
+      ]);
+
+      // Heal drift: feed may show calendarCount while rows were deleted.
+      if (skip === 0 && typeof post.calendarCount === 'number' && post.calendarCount !== total) {
+        void PostModel.updateOne({ _id: postObjectId }, { $set: { calendarCount: total } });
+      }
+
+      const items = rows
+        .map((row) => {
+          const u = row.userId as
+            | { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string }
+            | Types.ObjectId
+            | null
+            | undefined;
+          // Deleted / missing user — skip rather than blank rows.
+          if (!u || u instanceof Types.ObjectId || !u._id) return null;
+          const username = (u.username ?? '').trim();
+          if (!username) return null;
+          return {
+            _id: String(u._id),
+            username,
+            displayName: (u.displayName ?? '').trim() || username,
+            avatarUrl: u.avatarUrl ?? '',
+          };
+        })
+        .filter(Boolean);
+
+      const hasMore = skip + rows.length < total;
+      return reply.send({
+        ok: true,
+        data: {
+          items,
+          total,
+          nextSkip: hasMore ? skip + limit : null,
+        },
+      });
     },
   );
 
@@ -372,13 +453,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
 
       const calendarEntry = await CalendarModel.findOne({ postId, userId });
-      if (calendarEntry) {
+      const isAuthor = String(post.authorId) === userId;
+
+      // Non-authors leave the calendar; authors keep their own event on calendar.
+      if (calendarEntry && !isAuthor) {
         await calendarEntry.deleteOne();
         await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
       }
 
       let status = post.status;
-      if (String(post.authorId) === userId && post.status === 'going') {
+      if (isAuthor && post.status === 'going') {
         post.status = 'interested';
         await post.save();
         status = 'interested';
@@ -386,7 +470,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
 
       return reply.send({
         ok: true,
-        data: { inCalendar: false, status },
+        data: { inCalendar: isAuthor ? true : false, status },
       });
     },
   );
