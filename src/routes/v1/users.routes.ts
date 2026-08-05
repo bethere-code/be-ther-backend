@@ -73,6 +73,7 @@ function mapPostToCalendarItem(
     isAuthoredByViewer?: boolean;
     inCalendar?: boolean;
     hiddenOnProfile?: boolean;
+    calendarStatus?: 'interested' | 'going' | null;
   },
 ) {
   const date =
@@ -131,6 +132,9 @@ function mapPostToCalendarItem(
     bookmarked,
     isAuthoredByMe: extras?.isAuthoredByViewer ?? false,
     inCalendar: extras?.inCalendar ?? false,
+    calendarStatus:
+      extras?.calendarStatus ??
+      (extras?.isAuthoredByViewer ? 'going' : extras?.inCalendar ? 'going' : null),
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
     authorId: mapAuthor(post.authorId),
   };
@@ -380,8 +384,17 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         .lean();
       const hiddenSet = new Set(hiddenOnProfile.map((h) => String(h.postId)));
 
-      const profileCalendar = await CalendarModel.find({ userId: user._id }).select('postId').lean();
+      const profileCalendar = await CalendarModel.find({ userId: user._id })
+        .select('postId status')
+        .lean();
       const profileCalendarSet = new Set(profileCalendar.map((c) => String(c.postId)));
+      const profileCalendarStatus = new Map<string, 'interested' | 'going'>();
+      for (const entry of profileCalendar) {
+        profileCalendarStatus.set(
+          String(entry.postId),
+          entry.status === 'interested' ? 'interested' : 'going',
+        );
+      }
 
       const postIds = new Set<string>();
       const mergedPosts: Array<{ post: LeanPost; source: 'authored' | 'calendar' }> = [];
@@ -434,8 +447,12 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
               : String(post.authorId);
           return mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
             isAuthoredByViewer: String(authorId) === viewerId,
-            inCalendar: profileCalendarSet.has(id),
+            inCalendar: profileCalendarSet.has(id) || String(authorId) === String(user._id),
             hiddenOnProfile: hiddenSet.has(id),
+            calendarStatus:
+              String(authorId) === viewerId
+                ? 'going'
+                : (profileCalendarStatus.get(id) ?? null),
           });
         })
         .filter((item) => item.date != null);
