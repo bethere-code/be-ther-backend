@@ -53,6 +53,7 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     liked: post.liked ?? false,
     bookmarked: post.bookmarked ?? false,
     inCalendar: post.inCalendar ?? false,
+    calendarStatus: post.calendarStatus ?? (post.inCalendar ? 'going' : null),
     isPast,
   };
 }

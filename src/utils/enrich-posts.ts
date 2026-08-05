@@ -52,12 +52,18 @@ export async function enrichPostsForViewer(
   const [likes, bookmarks, calendars] = await Promise.all([
     LikeModel.find({ userId: viewerId, postId: { $in: objectIds } }).select('postId').lean(),
     BookmarkModel.find({ userId: viewerId, postId: { $in: objectIds } }).select('postId').lean(),
-    CalendarModel.find({ userId: viewerId, postId: { $in: objectIds } }).select('postId').lean(),
+    CalendarModel.find({ userId: viewerId, postId: { $in: objectIds } })
+      .select('postId status')
+      .lean(),
   ]);
 
   const likedSet = new Set(likes.map((l) => String(l.postId)));
   const bookmarkedSet = new Set(bookmarks.map((b) => String(b.postId)));
-  const calendarSet = new Set(calendars.map((c) => String(c.postId)));
+  const calendarStatusByPost = new Map<string, 'interested' | 'going'>();
+  for (const c of calendars) {
+    const status = c.status === 'interested' ? 'interested' : 'going';
+    calendarStatusByPost.set(String(c.postId), status);
+  }
 
   // Heal older own posts created before "author always on calendar" —
   // upsert calendar rows so attendees count / sheet stay accurate.
@@ -71,20 +77,21 @@ export async function enrichPostsForViewer(
         : authorRaw != null
           ? String(authorRaw)
           : '';
-    if (!authorId || authorId !== viewerId || calendarSet.has(id)) continue;
+    if (!authorId || authorId !== viewerId || calendarStatusByPost.has(id)) continue;
 
     try {
       await CalendarModel.create({
         postId: post._id,
         userId: new Types.ObjectId(viewerId),
+        status: 'going',
       });
       await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
       const prev = typeof post.calendarCount === 'number' ? post.calendarCount : 0;
       healedCalendarCounts.set(id, prev + 1);
-      calendarSet.add(id);
+      calendarStatusByPost.set(id, 'going');
     } catch {
       // Duplicate key / race — treat as already on calendar.
-      calendarSet.add(id);
+      calendarStatusByPost.set(id, 'going');
     }
   }
 
@@ -98,6 +105,9 @@ export async function enrichPostsForViewer(
           ? String(post.authorId)
           : '';
     const isOwn = authorId === viewerId;
+    const calendarStatus = isOwn
+      ? ('going' as const)
+      : (calendarStatusByPost.get(id) ?? null);
     return {
       ...post,
       ...(healedCalendarCounts.has(id) ? { calendarCount: healedCalendarCounts.get(id) } : {}),
@@ -105,7 +115,8 @@ export async function enrichPostsForViewer(
       liked: likedSet.has(id),
       bookmarked: bookmarkedSet.has(id),
       // Own events are always on the author's calendar.
-      inCalendar: isOwn || calendarSet.has(id),
+      inCalendar: calendarStatus != null,
+      calendarStatus,
       isEventPast: isPostEventPast(post as Parameters<typeof isPostEventPast>[0]),
     };
   });

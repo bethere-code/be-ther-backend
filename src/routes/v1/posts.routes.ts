@@ -184,7 +184,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       let inCalendar = false;
       const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
       if (!existing) {
-        await CalendarModel.create({ postId: post._id, userId: authorId });
+        await CalendarModel.create({ postId: post._id, userId: authorId, status: 'going' });
         await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
       }
       inCalendar = true;
@@ -192,7 +192,12 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const json = post.toJSON() as Record<string, unknown>;
       return reply.send({
         ok: true,
-        data: { ...json, postId: String(post._id), inCalendar },
+        data: {
+          ...json,
+          postId: String(post._id),
+          inCalendar,
+          calendarStatus: 'going',
+        },
       });
     },
   );
@@ -266,6 +271,19 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     async (req, reply) => {
       const postId = (req.params as { id: string }).id;
       const userId = req.userId!;
+      const parsed = z
+        .object({
+          status: z.enum(['interested', 'going', 'none']).optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      // Legacy toggle when body omitted: add as going, or remove if present.
+      const requested =
+        parsed.data.status ??
+        null;
 
       if (!Types.ObjectId.isValid(postId)) {
         return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
@@ -280,21 +298,43 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(403).send({ ok: false, error: { message: 'Cannot add private event to calendar' } });
       }
 
-      // Author's event is always on their calendar — no remove.
-      if (String(post.authorId) === userId) {
+      const isAuthor = String(post.authorId) === userId;
+
+      // Author's event is always on their calendar as going — no remove.
+      if (isAuthor) {
         const existingOwn = await CalendarModel.findOne({ postId, userId });
         if (!existingOwn) {
-          await CalendarModel.create({ postId, userId });
+          await CalendarModel.create({ postId, userId, status: 'going' });
           await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
+        } else if (existingOwn.status !== 'going') {
+          existingOwn.status = 'going';
+          await existingOwn.save();
         }
-        return reply.send({ ok: true, data: { inCalendar: true } });
+        return reply.send({
+          ok: true,
+          data: { inCalendar: true, calendarStatus: 'going' as const },
+        });
       }
 
       const existing = await CalendarModel.findOne({ postId, userId });
-      if (existing) {
-        await existing.deleteOne();
-        await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
-        return reply.send({ ok: true, data: { inCalendar: false } });
+
+      // Resolve intent for legacy clients with empty body.
+      let nextStatus: 'interested' | 'going' | 'none';
+      if (requested != null) {
+        nextStatus = requested;
+      } else {
+        nextStatus = existing ? 'none' : 'going';
+      }
+
+      if (nextStatus === 'none') {
+        if (existing) {
+          await existing.deleteOne();
+          await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
+        }
+        return reply.send({
+          ok: true,
+          data: { inCalendar: false, calendarStatus: null },
+        });
       }
 
       if (isPostEventPast(post)) {
@@ -304,21 +344,33 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         });
       }
 
-      await CalendarModel.create({ postId, userId });
-      await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
-
-      if (String(post.authorId) !== userId) {
-        const mutual = await areMutualFollowers(userId, String(post.authorId));
-        await NotificationModel.create({
-          userId: post.authorId,
-          type: 'calendar',
-          actorUserId: userId,
-          postId,
-          mutualFollow: mutual,
+      if (existing) {
+        if (existing.status !== nextStatus) {
+          existing.status = nextStatus;
+          await existing.save();
+        }
+        return reply.send({
+          ok: true,
+          data: { inCalendar: true, calendarStatus: nextStatus },
         });
       }
 
-      return reply.send({ ok: true, data: { inCalendar: true } });
+      await CalendarModel.create({ postId, userId, status: nextStatus });
+      await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
+
+      const mutual = await areMutualFollowers(userId, String(post.authorId));
+      await NotificationModel.create({
+        userId: post.authorId,
+        type: 'calendar',
+        actorUserId: userId,
+        postId,
+        mutualFollow: mutual,
+      });
+
+      return reply.send({
+        ok: true,
+        data: { inCalendar: true, calendarStatus: nextStatus },
+      });
     },
   );
 
