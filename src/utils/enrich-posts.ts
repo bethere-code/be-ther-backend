@@ -79,19 +79,21 @@ export async function enrichPostsForViewer(
           : '';
     if (!authorId || authorId !== viewerId || calendarStatusByPost.has(id)) continue;
 
+    const seedStatus =
+      post.status === 'interested' ? ('interested' as const) : ('going' as const);
     try {
       await CalendarModel.create({
         postId: post._id,
         userId: new Types.ObjectId(viewerId),
-        status: 'going',
+        status: seedStatus,
       });
       await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
       const prev = typeof post.calendarCount === 'number' ? post.calendarCount : 0;
       healedCalendarCounts.set(id, prev + 1);
-      calendarStatusByPost.set(id, 'going');
+      calendarStatusByPost.set(id, seedStatus);
     } catch {
       // Duplicate key / race — treat as already on calendar.
-      calendarStatusByPost.set(id, 'going');
+      calendarStatusByPost.set(id, seedStatus);
     }
   }
 
@@ -105,9 +107,14 @@ export async function enrichPostsForViewer(
           ? String(post.authorId)
           : '';
     const isOwn = authorId === viewerId;
+    const fromCalendar = calendarStatusByPost.get(id);
+    const fromPost =
+      post.status === 'interested' || post.status === 'going'
+        ? (post.status as 'interested' | 'going')
+        : ('going' as const);
     const calendarStatus = isOwn
-      ? ('going' as const)
-      : (calendarStatusByPost.get(id) ?? null);
+      ? (fromCalendar ?? fromPost)
+      : (fromCalendar ?? null);
     return {
       ...post,
       ...(healedCalendarCounts.has(id) ? { calendarCount: healedCalendarCounts.get(id) } : {}),

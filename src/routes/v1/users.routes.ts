@@ -453,7 +453,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
             hiddenOnProfile: hiddenSet.has(id),
             calendarStatus:
               String(authorId) === viewerId
-                ? 'going'
+                ? (profileCalendarStatus.get(id) ??
+                    (post.status === 'interested' ? 'interested' : 'going'))
                 : (profileCalendarStatus.get(id) ?? null),
           });
         })

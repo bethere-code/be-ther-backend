@@ -180,12 +180,21 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         { $inc: { placesVisited: 1, eventsCount: 1 } },
       );
 
-      // Author's own event always lands on their calendar.
+      // Author's own event always lands on their calendar with the RSVP they picked.
+      const authorStatus =
+        parsed.data.status === 'interested' ? 'interested' : 'going';
       let inCalendar = false;
       const existing = await CalendarModel.findOne({ postId: post._id, userId: authorId });
       if (!existing) {
-        await CalendarModel.create({ postId: post._id, userId: authorId, status: 'going' });
+        await CalendarModel.create({
+          postId: post._id,
+          userId: authorId,
+          status: authorStatus,
+        });
         await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
+      } else if (existing.status !== authorStatus) {
+        existing.status = authorStatus;
+        await existing.save();
       }
       inCalendar = true;
 
@@ -196,7 +205,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
           ...json,
           postId: String(post._id),
           inCalendar,
-          calendarStatus: 'going',
+          calendarStatus: authorStatus,
         },
       });
     },
@@ -300,19 +309,32 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
 
       const isAuthor = String(post.authorId) === userId;
 
-      // Author's event is always on their calendar as going — no remove.
+      // Author stays on calendar forever — can switch Interested ↔ Going only.
       if (isAuthor) {
+        if (requested === 'none') {
+          return reply.status(400).send({
+            ok: false,
+            error: {
+              message: 'You cannot remove your own event from the calendar. Delete the event instead.',
+            },
+          });
+        }
+        const nextStatus: 'interested' | 'going' =
+          requested === 'interested' ? 'interested' : 'going';
         const existingOwn = await CalendarModel.findOne({ postId, userId });
         if (!existingOwn) {
-          await CalendarModel.create({ postId, userId, status: 'going' });
+          await CalendarModel.create({ postId, userId, status: nextStatus });
           await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
-        } else if (existingOwn.status !== 'going') {
-          existingOwn.status = 'going';
+        } else if (existingOwn.status !== nextStatus) {
+          existingOwn.status = nextStatus;
           await existingOwn.save();
+        }
+        if (post.status === 'interested' || post.status === 'going') {
+          await PostModel.updateOne({ _id: postId }, { $set: { status: nextStatus } });
         }
         return reply.send({
           ok: true,
-          data: { inCalendar: true, calendarStatus: 'going' as const },
+          data: { inCalendar: true, calendarStatus: nextStatus },
         });
       }
 
