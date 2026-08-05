@@ -47,6 +47,8 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     type: eventDetails?.type ?? 'event',
     status: post.status,
     caption: post.caption ?? '',
+    viewCount: Math.max(0, Number(post.viewCount ?? 0) || 0),
+    calendarCount: Math.max(0, Number(post.calendarCount ?? 0) || 0),
     authorId: post.authorId,
     liked: post.liked ?? false,
     bookmarked: post.bookmarked ?? false,

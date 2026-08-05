@@ -54,6 +54,7 @@ const postSchema = new Schema(
     likesCount: { type: Number, default: 0 },
     commentsCount: { type: Number, default: 0 },
     calendarCount: { type: Number, default: 0 },
+    viewCount: { type: Number, default: 0 },
     isPrivate: { type: Boolean, default: false },
     taggedUserIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     eventDetails: { type: eventDetailsSchema },

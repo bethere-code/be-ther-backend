@@ -29,11 +29,21 @@ type LeanPost = {
   status: string;
   imageUrl: string;
   isPrivate?: boolean;
+  calendarCount?: number;
+  viewCount?: number;
   eventDetails?: {
     date?: string;
     time?: string;
     venue?: string;
     ticketUrl?: string;
+    eventLocation?: {
+      name?: string;
+      formattedAddress?: string;
+      locality?: string;
+      city?: string;
+      state?: string;
+      country?: string;
+    };
   };
   createdAt?: Date;
 };
@@ -72,11 +82,34 @@ function mapPostToCalendarItem(
   const country = String(post.country ?? '').trim();
   const venue = String(post.eventDetails?.venue ?? '').trim();
   const location = String(post.location ?? '').trim();
+  const eventLocation = post.eventDetails?.eventLocation;
+  const formattedAddress = String(eventLocation?.formattedAddress ?? '').trim();
+  const placeName = String(eventLocation?.name ?? '').trim();
   let place = country;
   if (!place && venue && venue.toLowerCase() !== location.toLowerCase()) {
     place = venue;
   } else if (!place) {
     place = venue;
+  }
+
+  const addressParts = [
+    formattedAddress,
+    [placeName, eventLocation?.city, eventLocation?.state, eventLocation?.country]
+      .map((p) => String(p ?? '').trim())
+      .filter(Boolean)
+      .join(', '),
+    venue,
+    place,
+  ];
+  let address = '';
+  for (const part of addressParts) {
+    if (part && part.toLowerCase() !== location.toLowerCase()) {
+      address = part;
+      break;
+    }
+  }
+  if (!address) {
+    address = formattedAddress || venue || place || location;
   }
 
   return {
@@ -89,6 +122,9 @@ function mapPostToCalendarItem(
     venue,
     country,
     place: place || null,
+    address: address || null,
+    calendarCount: Math.max(0, Number(post.calendarCount ?? 0) || 0),
+    viewCount: Math.max(0, Number(post.viewCount ?? 0) || 0),
     ticketUrl: post.eventDetails?.ticketUrl ?? null,
     time: post.eventDetails?.time ?? null,
     source,
@@ -328,7 +364,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
 
       const authored = await PostModel.find({ authorId: user._id })
-        .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
+        .select(
+          'authorId location status imageUrl createdAt eventDetails country isPrivate calendarCount viewCount',
+        )
         .populate('authorId', AUTHOR_SELECT)
         .sort({ createdAt: -1 })
         .lean();
@@ -360,7 +398,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         const savedIds = profileCalendar.map((entry) => entry.postId);
         if (savedIds.length > 0) {
           const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
-            .select('authorId location status imageUrl createdAt eventDetails country isPrivate')
+            .select(
+              'authorId location status imageUrl createdAt eventDetails country isPrivate calendarCount viewCount',
+            )
             .populate('authorId', AUTHOR_SELECT)
             .lean();
           for (const post of savedPosts) {

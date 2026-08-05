@@ -8,6 +8,7 @@ import { LikeModel } from '../../models/like.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { PostReportModel } from '../../models/post-report.model.js';
+import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { areMutualFollowers } from '../../services/follow.service.js';
 import { UserModel } from '../../models/user.model.js';
@@ -318,6 +319,77 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
 
       return reply.send({ ok: true, data: { inCalendar: true } });
+    },
+  );
+
+  /**
+   * Record a unique view for the authenticated viewer.
+   * Idempotent — duplicate hits do not bump viewCount.
+   * Authors do not count their own opens.
+   */
+  app.post(
+    '/api/v1/posts/:id/view',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).select('authorId isPrivate viewCount').lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const currentCount = Math.max(0, Number(post.viewCount ?? 0) || 0);
+
+      // Owner opens never count as views.
+      if (String(post.authorId) === userId) {
+        return reply.send({
+          ok: true,
+          data: { counted: false, viewCount: currentCount },
+        });
+      }
+
+      if (post.isPrivate) {
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
+        if (!mutual) {
+          return reply.status(403).send({ ok: false, error: { message: 'Event is private' } });
+        }
+      }
+
+      try {
+        await PostViewModel.create({ postId, userId });
+      } catch (err: unknown) {
+        const code =
+          err && typeof err === 'object' && 'code' in err
+            ? (err as { code?: number }).code
+            : undefined;
+        // Duplicate key — already counted this viewer.
+        if (code === 11000) {
+          return reply.send({
+            ok: true,
+            data: { counted: false, viewCount: currentCount },
+          });
+        }
+        throw err;
+      }
+
+      const updated = await PostModel.findByIdAndUpdate(
+        postId,
+        { $inc: { viewCount: 1 } },
+        { new: true, select: 'viewCount' },
+      ).lean();
+
+      return reply.send({
+        ok: true,
+        data: {
+          counted: true,
+          viewCount: Math.max(0, Number(updated?.viewCount ?? currentCount + 1) || 0),
+        },
+      });
     },
   );
 
