@@ -4,6 +4,8 @@ import { z } from 'zod';
 
 import { BookmarkModel } from '../../models/bookmark.model.js';
 import { CalendarModel } from '../../models/calendar.model.js';
+import { CommentLikeModel } from '../../models/comment-like.model.js';
+import { CommentModel } from '../../models/comment.model.js';
 import { LikeModel } from '../../models/like.model.js';
 import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
@@ -15,6 +17,43 @@ import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
 import { searchPosts } from '../../services/search.service.js';
+
+const COMMENT_AUTHOR_SELECT = 'username displayName avatarUrl';
+
+type PopulatedCommentAuthor = {
+  _id: Types.ObjectId;
+  username?: string;
+  displayName?: string;
+  avatarUrl?: string;
+};
+
+function mapCommentAuthor(author: PopulatedCommentAuthor | Types.ObjectId | null | undefined) {
+  if (!author || author instanceof Types.ObjectId || !('_id' in author)) {
+    return null;
+  }
+  const username = (author.username ?? '').trim();
+  if (!username) return null;
+  return {
+    _id: String(author._id),
+    username,
+    displayName: (author.displayName ?? '').trim() || username,
+    avatarUrl: author.avatarUrl ?? '',
+  };
+}
+
+async function assertCanViewPost(
+  post: { authorId: unknown; isPrivate?: boolean },
+  viewerId: string,
+): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+  if (!post.isPrivate || String(post.authorId) === viewerId) {
+    return { ok: true };
+  }
+  const mutual = await areMutualFollowers(viewerId, String(post.authorId));
+  if (!mutual) {
+    return { ok: false, status: 403, message: 'Event is private' };
+  }
+  return { ok: true };
+}
 
 const captionSchema = z
   .string()
@@ -541,6 +580,296 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/api/v1/posts/:id/likes',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+      const q = req.query as { skip?: string };
+      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+      const limit = 40;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const postObjectId = new Types.ObjectId(postId);
+      const post = await PostModel.findById(postObjectId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
+      const [total, rows] = await Promise.all([
+        LikeModel.countDocuments({ postId: postObjectId }),
+        LikeModel.find({ postId: postObjectId })
+          .sort({ createdAt: -1, _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .populate('userId', COMMENT_AUTHOR_SELECT)
+          .lean(),
+      ]);
+
+      if (skip === 0 && typeof post.likesCount === 'number' && post.likesCount !== total) {
+        void PostModel.updateOne({ _id: postObjectId }, { $set: { likesCount: total } });
+      }
+
+      const items = rows
+        .map((row) => {
+          const mapped = mapCommentAuthor(
+            row.userId as PopulatedCommentAuthor | Types.ObjectId | null | undefined,
+          );
+          return mapped;
+        })
+        .filter(Boolean);
+
+      const hasMore = skip + rows.length < total;
+      return reply.send({
+        ok: true,
+        data: {
+          items,
+          total,
+          nextSkip: hasMore ? skip + limit : null,
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/posts/:id/comments',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+      const q = req.query as { skip?: string };
+      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+      const limit = 40;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const postObjectId = new Types.ObjectId(postId);
+      const post = await PostModel.findById(postObjectId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
+      const [total, rows] = await Promise.all([
+        CommentModel.countDocuments({ postId: postObjectId }),
+        CommentModel.find({ postId: postObjectId })
+          .sort({ createdAt: -1, _id: -1 })
+          .skip(skip)
+          .limit(limit)
+          .populate('authorId', COMMENT_AUTHOR_SELECT)
+          .lean(),
+      ]);
+
+      if (skip === 0 && typeof post.commentsCount === 'number' && post.commentsCount !== total) {
+        void PostModel.updateOne({ _id: postObjectId }, { $set: { commentsCount: total } });
+      }
+
+      const commentIds = rows.map((r) => r._id);
+      const likedRows =
+        commentIds.length === 0
+          ? []
+          : await CommentLikeModel.find({
+              userId,
+              commentId: { $in: commentIds },
+            })
+              .select('commentId')
+              .lean();
+      const likedSet = new Set(likedRows.map((l) => String(l.commentId)));
+
+      const items = rows
+        .map((row) => {
+          const author = mapCommentAuthor(
+            row.authorId as PopulatedCommentAuthor | Types.ObjectId | null | undefined,
+          );
+          if (!author) return null;
+          return {
+            _id: String(row._id),
+            postId: String(row.postId),
+            text: row.text,
+            likesCount: Math.max(0, Number(row.likesCount ?? 0) || 0),
+            liked: likedSet.has(String(row._id)),
+            createdAt: row.createdAt,
+            author,
+          };
+        })
+        .filter(Boolean);
+
+      const hasMore = skip + rows.length < total;
+      return reply.send({
+        ok: true,
+        data: {
+          items,
+          total,
+          nextSkip: hasMore ? skip + limit : null,
+        },
+      });
+    },
+  );
+
+  app.post(
+    '/api/v1/posts/:id/comments',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+      const parsed = z
+        .object({
+          text: z.string().trim().min(1).max(500),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const postObjectId = new Types.ObjectId(postId);
+      const post = await PostModel.findById(postObjectId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
+      const comment = await CommentModel.create({
+        postId: postObjectId,
+        authorId: userId,
+        text: parsed.data.text,
+      });
+      await PostModel.updateOne({ _id: postObjectId }, { $inc: { commentsCount: 1 } });
+
+      const populated = await CommentModel.findById(comment._id)
+        .populate('authorId', COMMENT_AUTHOR_SELECT)
+        .lean();
+      const author = mapCommentAuthor(
+        populated?.authorId as PopulatedCommentAuthor | Types.ObjectId | null | undefined,
+      );
+
+      return reply.send({
+        ok: true,
+        data: {
+          _id: String(comment._id),
+          postId,
+          text: comment.text,
+          likesCount: 0,
+          liked: false,
+          createdAt: comment.createdAt,
+          author,
+        },
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/comments/:id',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const commentId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(commentId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid comment id' } });
+      }
+
+      const comment = await CommentModel.findById(commentId).lean();
+      if (!comment) {
+        return reply.status(404).send({ ok: false, error: { message: 'Comment not found' } });
+      }
+
+      if (String(comment.authorId) !== userId) {
+        return reply.status(403).send({
+          ok: false,
+          error: { message: 'Only the comment author can delete this comment' },
+        });
+      }
+
+      await Promise.all([
+        CommentModel.deleteOne({ _id: commentId }),
+        CommentLikeModel.deleteMany({ commentId }),
+        PostModel.updateOne({ _id: comment.postId }, { $inc: { commentsCount: -1 } }),
+      ]);
+      await PostModel.updateOne(
+        { _id: comment.postId, commentsCount: { $lt: 0 } },
+        { $set: { commentsCount: 0 } },
+      );
+
+      return reply.send({ ok: true, data: { deleted: true } });
+    },
+  );
+
+  app.post(
+    '/api/v1/comments/:id/like',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const commentId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(commentId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid comment id' } });
+      }
+
+      const comment = await CommentModel.findById(commentId).lean();
+      if (!comment) {
+        return reply.status(404).send({ ok: false, error: { message: 'Comment not found' } });
+      }
+
+      const post = await PostModel.findById(comment.postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
+      const existing = await CommentLikeModel.findOne({ commentId, userId });
+      if (existing) {
+        await existing.deleteOne();
+        await CommentModel.updateOne({ _id: commentId }, { $inc: { likesCount: -1 } });
+        const updated = await CommentModel.findById(commentId).select('likesCount').lean();
+        return reply.send({
+          ok: true,
+          data: {
+            liked: false,
+            likesCount: Math.max(0, Number(updated?.likesCount ?? 0) || 0),
+          },
+        });
+      }
+
+      await CommentLikeModel.create({ commentId, userId });
+      await CommentModel.updateOne({ _id: commentId }, { $inc: { likesCount: 1 } });
+      const updated = await CommentModel.findById(commentId).select('likesCount').lean();
+      return reply.send({
+        ok: true,
+        data: {
+          liked: true,
+          likesCount: Math.max(0, Number(updated?.likesCount ?? 0) || 0),
+        },
+      });
+    },
+  );
+
   app.post(
     '/api/v1/posts/:id/hide-on-profile',
     { preHandler: [app.authenticate] },
@@ -641,12 +970,20 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(403).send({ ok: false, error: { message: 'Only the author can delete this event' } });
       }
 
+      const commentIds = (
+        await CommentModel.find({ postId }).select('_id').lean()
+      ).map((c) => c._id);
+
       await Promise.all([
         LikeModel.deleteMany({ postId }),
         BookmarkModel.deleteMany({ postId }),
         CalendarModel.deleteMany({ postId }),
         NotificationModel.deleteMany({ postId }),
         ProfileCalendarHiddenModel.deleteMany({ postId }),
+        CommentModel.deleteMany({ postId }),
+        commentIds.length > 0
+          ? CommentLikeModel.deleteMany({ commentId: { $in: commentIds } })
+          : Promise.resolve(),
         PostModel.deleteOne({ _id: postId }),
         UserModel.updateOne({ _id: userId }, { $inc: { eventsCount: -1 } }),
       ]);

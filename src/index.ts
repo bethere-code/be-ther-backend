@@ -8,6 +8,8 @@ import './models/user.model.js';
 import './models/otp-challenge.model.js';
 import './models/post.model.js';
 import './models/like.model.js';
+import './models/comment.model.js';
+import './models/comment-like.model.js';
 import './models/bookmark.model.js';
 import './models/calendar.model.js';
 import './models/follow.model.js';

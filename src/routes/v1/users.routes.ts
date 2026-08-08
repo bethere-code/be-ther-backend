@@ -32,6 +32,8 @@ type LeanPost = {
   isPrivate?: boolean;
   calendarCount?: number;
   viewCount?: number;
+  likesCount?: number;
+  commentsCount?: number;
   eventDetails?: {
     date?: string;
     time?: string;
@@ -128,6 +130,8 @@ function mapPostToCalendarItem(
     address: address || null,
     calendarCount: Math.max(0, Number(post.calendarCount ?? 0) || 0),
     viewCount: Math.max(0, Number(post.viewCount ?? 0) || 0),
+    likesCount: Math.max(0, Number(post.likesCount ?? 0) || 0),
+    commentsCount: Math.max(0, Number(post.commentsCount ?? 0) || 0),
     ticketUrl: post.eventDetails?.ticketUrl ?? null,
     time: post.eventDetails?.time ?? null,
     source,
@@ -371,7 +375,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
 
       const authored = await PostModel.find({ authorId: user._id })
         .select(
-          'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount',
+          'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount',
         )
         .populate('authorId', AUTHOR_SELECT)
         .sort({ createdAt: -1 })
@@ -414,7 +418,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (savedIds.length > 0) {
           const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
             .select(
-              'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount',
+              'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount',
             )
             .populate('authorId', AUTHOR_SELECT)
             .lean();
