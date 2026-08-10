@@ -904,6 +904,69 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  /** Unhide — same resource as hide (DELETE) or dedicated POST. */
+  app.delete(
+    '/api/v1/posts/:id/hide-on-profile',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const isAuthor = String(post.authorId) === userId;
+      const onCalendar = await CalendarModel.exists({ postId, userId });
+      if (!isAuthor && !onCalendar) {
+        return reply.status(403).send({
+          ok: false,
+          error: { message: 'Event is not on your profile calendar' },
+        });
+      }
+
+      await ProfileCalendarHiddenModel.deleteOne({ profileUserId: userId, postId });
+
+      return reply.send({ ok: true, data: { hiddenOnProfile: false } });
+    },
+  );
+
+  app.post(
+    '/api/v1/posts/:id/unhide-on-profile',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const post = await PostModel.findById(postId).lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const isAuthor = String(post.authorId) === userId;
+      const onCalendar = await CalendarModel.exists({ postId, userId });
+      if (!isAuthor && !onCalendar) {
+        return reply.status(403).send({
+          ok: false,
+          error: { message: 'Event is not on your profile calendar' },
+        });
+      }
+
+      await ProfileCalendarHiddenModel.deleteOne({ profileUserId: userId, postId });
+
+      return reply.send({ ok: true, data: { hiddenOnProfile: false } });
+    },
+  );
+
   app.post(
     '/api/v1/posts/:id/not-going',
     { preHandler: [app.authenticate] },

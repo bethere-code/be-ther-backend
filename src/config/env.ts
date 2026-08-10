@@ -32,6 +32,9 @@ const schema = z
     /** Public web origin for share links (OG previews). e.g. https://be-ther.com */
     SHARE_WEB_BASE_URL: z.string().optional(),
 
+    /** Minutes after event start before it counts as past (feed/explore/profile). */
+    EVENT_PAST_GRACE_MINUTES: z.coerce.number().int().min(0).default(60),
+
     R2_ACCOUNT_ID: z.string().optional(),
     R2_ACCESS_KEY_ID: z.string().optional(),
     R2_SECRET_ACCESS_KEY: z.string().optional(),

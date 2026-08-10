@@ -34,6 +34,15 @@ async function findUserByIdentifier(identifier: string) {
   return UserModel.findOne({ username: normalized });
 }
 
+/** Explicit defaults so new accounts always start on the full calendar. */
+function defaultUserSettings() {
+  return {
+    isPrivateProfile: false,
+    pushEnabled: true,
+    calendarView: 'full' as const,
+  };
+}
+
 async function uniqueUsername(base: string): Promise<string> {
   let candidate = base.slice(0, 20);
   for (let i = 0; i < 20; i += 1) {
@@ -206,6 +215,7 @@ export async function verifyOtp(env: Env, email: string, code: string): Promise<
       displayName: uname,
       emailVerified: true,
       authProvider: 'otp',
+      settings: defaultUserSettings(),
     });
   } else {
     user.emailVerified = true;
@@ -339,6 +349,7 @@ export async function verifySignupOtp(
     emailVerified: true,
     authProvider: 'password',
     passwordHash: challenge.signupPasswordHash,
+    settings: defaultUserSettings(),
     ...(challenge.signupAge != null ? { age: challenge.signupAge } : {}),
   });
 
@@ -391,6 +402,7 @@ export async function loginWithGoogle(env: Env, idToken: string): Promise<{ acce
         emailVerified: true,
         authProvider: 'google',
         passwordHash: '',
+        settings: defaultUserSettings(),
       });
     }
   }

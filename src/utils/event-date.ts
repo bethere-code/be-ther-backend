@@ -68,7 +68,67 @@ function todayIsoLocal(now: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-/** True when the event date (and optional time) is before now. */
+/** Minutes after start before an event is treated as past. From EVENT_PAST_GRACE_MINUTES. */
+export function eventPastGraceMinutes(): number {
+  const raw = process.env.EVENT_PAST_GRACE_MINUTES;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return 60;
+  return Math.floor(n);
+}
+
+/** Parse `HH:mm` or `h:mm AM/PM` into local hours/minutes. */
+function parseTimeParts(timeRaw: string): { hour: number; minute: number } | null {
+  const trimmed = timeRaw.trim();
+  const twelve = trimmed.match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+  if (twelve) {
+    let hour = Number(twelve[1]);
+    const minute = Number(twelve[2]);
+    const period = twelve[3]!.toUpperCase();
+    if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+      return null;
+    }
+    if (period === 'AM') {
+      hour = hour % 12;
+    } else {
+      hour = (hour % 12) + 12;
+    }
+    if (hour < 0 || hour > 23) return null;
+    return { hour, minute };
+  }
+
+  const twentyFour = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (twentyFour) {
+    const hour = Number(twentyFour[1]);
+    const minute = Number(twentyFour[2]);
+    if (
+      !Number.isFinite(hour) ||
+      !Number.isFinite(minute) ||
+      hour < 0 ||
+      hour > 23 ||
+      minute < 0 ||
+      minute > 59
+    ) {
+      return null;
+    }
+    return { hour, minute };
+  }
+
+  return null;
+}
+
+function eventStartLocal(isoDate: string, timeRaw: string): Date | null {
+  const parts = parseTimeParts(timeRaw);
+  if (!parts) return null;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d, parts.hour, parts.minute, 0, 0);
+}
+
+/**
+ * True when the event is considered past.
+ * With a time: past only after start + EVENT_PAST_GRACE_MINUTES.
+ * Date-only: past once the calendar day is before today.
+ */
 export function isEventPast(
   dateRaw?: string | null,
   timeRaw?: string | null,
@@ -77,20 +137,16 @@ export function isEventPast(
   const iso = parseEventDateToIso(dateRaw);
   if (!iso) return false;
 
-  const today = todayIsoLocal(now);
-  if (iso < today) return true;
-  if (iso > today) return false;
-
   const time = timeRaw?.trim();
-  if (!time) return false;
+  if (time) {
+    const start = eventStartLocal(iso, time);
+    if (!start) return false;
+    const graceMs = eventPastGraceMinutes() * 60 * 1000;
+    return now.getTime() >= start.getTime() + graceMs;
+  }
 
-  const parsed = Date.parse(`${iso}T${time}`);
-  if (!Number.isNaN(parsed)) return parsed < now.getTime();
-
-  const fallback = Date.parse(`${iso} ${time}`);
-  if (!Number.isNaN(fallback)) return fallback < now.getTime();
-
-  return false;
+  const today = todayIsoLocal(now);
+  return iso < today;
 }
 
 type PostLike = {

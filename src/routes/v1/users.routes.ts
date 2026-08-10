@@ -185,8 +185,23 @@ async function enrichUserForViewer(
     if (following != null) followingCount = following;
   }
 
+  const rawSettings =
+    user.settings && typeof user.settings === 'object'
+      ? (user.settings as Record<string, unknown>)
+      : {};
+  const calendarView =
+    rawSettings.calendarView === 'events-only' ? 'events-only' : 'full';
+
   const payload: Record<string, unknown> = {
     ...user,
+    settings: {
+      isPrivateProfile: Boolean(rawSettings.isPrivateProfile),
+      pushEnabled:
+        rawSettings.pushEnabled === undefined
+          ? true
+          : Boolean(rawSettings.pushEnabled),
+      calendarView,
+    },
     isOwnProfile,
     isFollowing: viewerFollows,
     canDM,
