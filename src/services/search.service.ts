@@ -77,37 +77,13 @@ export function tokenizeSearchQuery(raw: string): string[] {
 /**
  * Accepts human dates like "22 june 2026", "Jun 22, 2026", "2026-06-22"
  * and returns ISO YYYY-MM-DD when parseable.
+ * Day/month name forms are parsed explicitly (via parseEventDateToIso) so we
+ * never rely on Date.parse, which shifts the calendar day in IST.
  */
 export function parseSearchDateQuery(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-
-  const fromHelper = parseEventDateToIso(trimmed);
-  if (fromHelper) return fromHelper;
-
-  const dayFirst = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+|,\s*)(\d{4})$/);
-  if (dayFirst) {
-    const day = Number(dayFirst[1]);
-    const monthRaw = dayFirst[2]!.slice(0, 3).toLowerCase();
-    const year = Number(dayFirst[3]);
-    const monthIdx = MONTH_ABBR.indexOf(monthRaw as (typeof MONTH_ABBR)[number]);
-    if (monthIdx >= 0 && day >= 1 && day <= 31 && year >= 1970) {
-      return `${year}-${String(monthIdx + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
-  }
-
-  const monthFirst = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2})(?:\s+|,\s*)(\d{4})$/);
-  if (monthFirst) {
-    const monthRaw = monthFirst[1]!.slice(0, 3).toLowerCase();
-    const day = Number(monthFirst[2]);
-    const year = Number(monthFirst[3]);
-    const monthIdx = MONTH_ABBR.indexOf(monthRaw as (typeof MONTH_ABBR)[number]);
-    if (monthIdx >= 0 && day >= 1 && day <= 31 && year >= 1970) {
-      return `${year}-${String(monthIdx + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    }
-  }
-
-  return null;
+  return parseEventDateToIso(trimmed);
 }
 
 /** "August", "aug", "August 2026", "aug 2026" → month (1-12) + optional year. */

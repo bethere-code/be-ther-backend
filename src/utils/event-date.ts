@@ -35,9 +35,25 @@ export function parseEventDateToIso(raw?: string | null): string | null {
     return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   }
 
-  const parsed = Date.parse(trimmed);
-  if (!Number.isNaN(parsed)) {
-    return new Date(parsed).toISOString().slice(0, 10);
+  // Day-first: "10 aug 2026" / "10 August, 2026" — do not use Date.parse (TZ day shift).
+  const dayFirst = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+|,\s*)(\d{4})$/);
+  if (dayFirst) {
+    const day = Number(dayFirst[1]);
+    const month = monthMap[dayFirst[2]!.slice(0, 3).toLowerCase()];
+    const year = Number(dayFirst[3]);
+    if (month !== undefined && day >= 1 && day <= 31 && year >= 1970) {
+      return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+  }
+
+  const monthFirst = trimmed.match(/^([A-Za-z]+)\s+(\d{1,2})(?:\s+|,\s*)(\d{4})$/);
+  if (monthFirst) {
+    const month = monthMap[monthFirst[1]!.slice(0, 3).toLowerCase()];
+    const day = Number(monthFirst[2]);
+    const year = Number(monthFirst[3]);
+    if (month !== undefined && day >= 1 && day <= 31 && year >= 1970) {
+      return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
   }
 
   return null;
