@@ -110,6 +110,43 @@ export function parseSearchDateQuery(raw: string): string | null {
   return null;
 }
 
+/** "August", "aug", "August 2026", "aug 2026" → month (1-12) + optional year. */
+export function parseSearchMonthQuery(
+  raw: string,
+): { month: number; year: number | null } | null {
+  const trimmed = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!trimmed) return null;
+
+  const withYear = trimmed.match(/^([a-z]+)\s+(\d{4})$/);
+  if (withYear) {
+    const month = monthIndexFromName(withYear[1]!);
+    const year = Number(withYear[2]);
+    if (month != null && year >= 1970) return { month, year };
+  }
+
+  const monthOnly = trimmed.match(/^([a-z]+)$/);
+  if (monthOnly) {
+    const month = monthIndexFromName(monthOnly[1]!);
+    if (month != null) return { month, year: null };
+  }
+
+  return null;
+}
+
+function monthIndexFromName(name: string): number | null {
+  const key = name.slice(0, 3).toLowerCase();
+  const idx = MONTH_ABBR.indexOf(key as (typeof MONTH_ABBR)[number]);
+  if (idx < 0) return null;
+  // Avoid treating short non-month words as months (e.g. "a", "to").
+  if (name.length >= 3 || MONTH_NAMES.some((n) => n === name)) {
+    return idx + 1;
+  }
+  if (MONTH_ABBR.includes(name as (typeof MONTH_ABBR)[number])) {
+    return idx + 1;
+  }
+  return null;
+}
+
 function dateSearchVariants(iso: string): string[] {
   const [y, m, d] = iso.split('-').map(Number);
   if (!y || !m || !d) return [iso];
@@ -132,6 +169,28 @@ function dateSearchVariants(iso: string): string[] {
   ];
 }
 
+/** True when stored event date (often ISO) matches a month name / month+year token. */
+function monthFieldMatches(
+  dateRaw: unknown,
+  monthQuery: { month: number; year: number | null },
+): boolean {
+  if (typeof dateRaw !== 'string' || !dateRaw.trim()) return false;
+  const iso = parseEventDateToIso(dateRaw) ?? (dateRaw.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null);
+  if (iso) {
+    const [, m, ] = iso.split('-').map(Number);
+    const y = Number(iso.slice(0, 4));
+    if (m !== monthQuery.month) return false;
+    if (monthQuery.year != null && y !== monthQuery.year) return false;
+    return true;
+  }
+  const lower = dateRaw.toLowerCase();
+  const monthIdx = monthQuery.month - 1;
+  const names = [MONTH_NAMES[monthIdx]!, MONTH_ABBR[monthIdx]!];
+  if (!names.some((n) => lower.includes(n))) return false;
+  if (monthQuery.year != null && !lower.includes(String(monthQuery.year))) return false;
+  return true;
+}
+
 function dateFieldMatches(
   dateRaw: unknown,
   query: string,
@@ -140,7 +199,16 @@ function dateFieldMatches(
 ): boolean {
   if (typeof dateRaw !== 'string' || !dateRaw.trim()) return false;
   if (containsInsensitive(dateRaw, query)) return true;
-  if (iso && (dateRaw === iso || dateRaw.startsWith(iso))) return true;
+
+  const monthQuery = parseSearchMonthQuery(query);
+  if (monthQuery && monthFieldMatches(dateRaw, monthQuery)) return true;
+
+  if (iso) {
+    const storedIso = parseEventDateToIso(dateRaw) ?? dateRaw;
+    if (storedIso === iso || storedIso.startsWith(iso) || dateRaw.startsWith(iso)) {
+      return true;
+    }
+  }
   const lower = dateRaw.toLowerCase();
   return variants.some((v) => lower.includes(v.toLowerCase()));
 }
@@ -205,6 +273,8 @@ export function scoreTokenHit(
 
 /**
  * Multi-token AND: every token must hit at least one field.
+ * Full date / month queries match on event date only (avoids AND-breaking
+ * month names against ISO dates like 2026-08-10).
  * Score = sum of per-token best field scores; past events sink.
  */
 export function scoreSearchHit(
@@ -212,6 +282,26 @@ export function scoreSearchHit(
   query: string,
   opts: ScoreOpts,
 ): number {
+  const details = post.eventDetails as { date?: string } | undefined;
+  const phrase = query.trim();
+
+  const fullIso = parseSearchDateQuery(phrase);
+  if (fullIso) {
+    const variants = dateSearchVariants(fullIso);
+    if (!dateFieldMatches(details?.date, phrase, fullIso, variants)) return 0;
+    const total = SCORE.DATE;
+    const past = isPostEventPast(post as Parameters<typeof isPostEventPast>[0]);
+    return past ? total - SCORE.PAST_PENALTY : total;
+  }
+
+  const monthQuery = parseSearchMonthQuery(phrase);
+  if (monthQuery) {
+    if (!monthFieldMatches(details?.date, monthQuery)) return 0;
+    const total = SCORE.DATE;
+    const past = isPostEventPast(post as Parameters<typeof isPostEventPast>[0]);
+    return past ? total - SCORE.PAST_PENALTY : total;
+  }
+
   const tokens = tokenizeSearchQuery(query);
   if (tokens.length === 0) return 0;
 
@@ -223,7 +313,6 @@ export function scoreSearchHit(
   }
 
   // Phrase bonus when full query hits event name (search-engine feel).
-  const phrase = query.trim();
   if (tokens.length > 1 && containsInsensitive(post.location, phrase)) {
     total += SCORE.EVENT_NAME;
   }
@@ -236,6 +325,39 @@ function createdAtMs(post: ScoredPost): number {
   if (!post.createdAt) return 0;
   const t = new Date(post.createdAt).getTime();
   return Number.isFinite(t) ? t : 0;
+}
+
+/** Mongo clauses that match ISO (and human) dates for a month / month+year. */
+function monthFieldMatchers(
+  monthQuery: { month: number; year: number | null },
+): Record<string, unknown>[] {
+  const mm = String(monthQuery.month).padStart(2, '0');
+  const monthIdx = monthQuery.month - 1;
+  const matchers: Record<string, unknown>[] = [
+    // ISO yyyy-MM-dd (and prefixes)
+    {
+      'eventDetails.date': {
+        $regex:
+          monthQuery.year != null
+            ? `^${monthQuery.year}-${mm}-`
+            : `^\\d{4}-${mm}-`,
+      },
+    },
+    // Human strings containing month name / abbr
+    {
+      'eventDetails.date': {
+        $regex: escapeRegex(MONTH_NAMES[monthIdx]!),
+        $options: 'i',
+      },
+    },
+    {
+      'eventDetails.date': {
+        $regex: escapeRegex(MONTH_ABBR[monthIdx]!),
+        $options: 'i',
+      },
+    },
+  ];
+  return matchers;
 }
 
 function fieldMatchersForToken(token: string): Record<string, unknown>[] {
@@ -262,6 +384,24 @@ function fieldMatchersForToken(token: string): Record<string, unknown>[] {
     matchers.push({ 'eventDetails.date': isoDate });
   }
 
+  const monthQuery = parseSearchMonthQuery(token);
+  if (monthQuery) {
+    matchers.push(...monthFieldMatchers(monthQuery));
+  }
+
+  return matchers;
+}
+
+function dateOnlyMatchers(isoDate: string): Record<string, unknown>[] {
+  const matchers: Record<string, unknown>[] = [{ 'eventDetails.date': isoDate }];
+  for (const variant of dateSearchVariants(isoDate)) {
+    matchers.push({
+      'eventDetails.date': {
+        $regex: escapeRegex(variant),
+        $options: 'i',
+      },
+    });
+  }
   return matchers;
 }
 
@@ -298,32 +438,42 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
     $or: [{ isPrivate: false }, { authorId: new Types.ObjectId(params.viewerId) }],
   };
 
+  const fullIso = parseSearchDateQuery(query);
+  const monthOnlyQuery = fullIso ? null : parseSearchMonthQuery(query);
+
   // Each token must match at least one field (Mongo AND of ORs).
+  // Exception: full date / month queries match event date only.
   const tokenClauses: Record<string, unknown>[] = [];
   const authorIdsByToken = new Map<string, Set<string>>();
 
-  for (const token of tokens) {
-    const matchers = fieldMatchersForToken(token);
-    const escaped = escapeRegex(token);
-    const textRegex = { $regex: escaped, $options: 'i' as const };
+  if (fullIso) {
+    tokenClauses.push({ $or: dateOnlyMatchers(fullIso) });
+  } else if (monthOnlyQuery) {
+    tokenClauses.push({ $or: monthFieldMatchers(monthOnlyQuery) });
+  } else {
+    for (const token of tokens) {
+      const matchers = fieldMatchersForToken(token);
+      const escaped = escapeRegex(token);
+      const textRegex = { $regex: escaped, $options: 'i' as const };
 
-    const matchingAuthors = await UserModel.find({
-      $or: [{ username: textRegex }, { displayName: textRegex }],
-    })
-      .select('_id')
-      .limit(50)
-      .lean();
+      const matchingAuthors = await UserModel.find({
+        $or: [{ username: textRegex }, { displayName: textRegex }],
+      })
+        .select('_id')
+        .limit(50)
+        .lean();
 
-    const authorIds = new Set(matchingAuthors.map((u) => String(u._id)));
-    authorIdsByToken.set(token.toLowerCase(), authorIds);
+      const authorIds = new Set(matchingAuthors.map((u) => String(u._id)));
+      authorIdsByToken.set(token.toLowerCase(), authorIds);
 
-    if (matchingAuthors.length > 0) {
-      matchers.push({
-        authorId: { $in: matchingAuthors.map((u) => u._id) },
-      });
+      if (matchingAuthors.length > 0) {
+        matchers.push({
+          authorId: { $in: matchingAuthors.map((u) => u._id) },
+        });
+      }
+
+      tokenClauses.push({ $or: matchers });
     }
-
-    tokenClauses.push({ $or: matchers });
   }
 
   const filter: Record<string, unknown> = {
