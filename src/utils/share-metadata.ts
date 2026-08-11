@@ -71,11 +71,13 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   const ogImage = imageUrl
     ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />
     <meta property="og:image:secure_url" content="${escapeHtml(imageUrl)}" />
-    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />`
+    <meta property="og:image:alt" content="${escapeHtml(title)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <link rel="image_src" href="${escapeHtml(imageUrl)}" />`
     : '';
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="en" prefix="og: https://ogp.me/ns#">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -91,13 +93,13 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   <meta name="twitter:title" content="${escapeHtml(title)}" />
   <meta name="twitter:description" content="${escapeHtml(description)}" />
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #0f0f0f; color: #f5f5f5; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #1a2332; color: #f5f0e8; }
     main { max-width: 480px; margin: 0 auto; padding: 24px 16px 40px; }
-    img.hero { width: 100%; aspect-ratio: 16/10; object-fit: cover; border: 2px solid #222; }
-    h1 { font-size: 1.5rem; margin: 16px 0 8px; }
-    p { color: #bdbdbd; line-height: 1.5; margin: 0 0 20px; white-space: pre-line; }
-    a.btn { display: block; text-align: center; background: #c8ff00; color: #111; padding: 14px; font-weight: 700; text-decoration: none; border: 2px solid #111; }
-    .hint { margin-top: 16px; font-size: 0.85rem; color: #888; text-align: center; }
+    img.hero { width: 100%; aspect-ratio: 21/9; object-fit: cover; border: 2px solid #0f1419; background: #f5f0e8; }
+    h1 { font-size: 1.5rem; margin: 16px 0 8px; color: #f5f0e8; }
+    p { color: #c4bdb0; line-height: 1.5; margin: 0 0 20px; white-space: pre-line; }
+    a.btn { display: block; text-align: center; background: #e07a5f; color: #fff; padding: 14px; font-weight: 700; text-decoration: none; border: 2px solid #0f1419; letter-spacing: 0.04em; }
+    .hint { margin-top: 16px; font-size: 0.85rem; color: #8a8378; text-align: center; }
   </style>
 </head>
 <body>

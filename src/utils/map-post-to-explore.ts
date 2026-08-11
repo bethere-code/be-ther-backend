@@ -1,8 +1,38 @@
 import { isPostEventPast } from './event-date.js';
 
+export type EventLocationFields = {
+  placeId?: string;
+  name?: string;
+  formattedAddress?: string;
+  locality?: string;
+  street?: string;
+  area?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+  lat?: number;
+  lng?: number;
+};
+
+function trimStr(value: unknown): string {
+  return String(value ?? '').trim();
+}
+
+/**
+ * Places `formattedAddress` only — no venue/country stitching.
+ */
+export function resolvePostEventAddress(post: Record<string, unknown>): string {
+  const eventDetails = post.eventDetails as Record<string, unknown> | undefined;
+  const eventLocation = eventDetails?.eventLocation as EventLocationFields | undefined;
+  return trimStr(eventLocation?.formattedAddress);
+}
+
 /** Maps an enriched feed post into the explore grid / sheet shape. */
 export function mapPostToExploreItem(post: Record<string, unknown>): Record<string, unknown> {
   const eventDetails = post.eventDetails as Record<string, unknown> | undefined;
+  const eventLocation = (eventDetails?.eventLocation ?? null) as EventLocationFields | null;
   const isPast = (post.isEventPast as boolean | undefined) ?? isPostEventPast(post as never);
   const likesCount = Number(post.likesCount ?? 0);
   const location = String(post.location ?? '');
@@ -18,25 +48,37 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     }
   }
 
-  const country = String(post.country ?? '').trim();
-  const venue = String(eventDetails?.venue ?? '').trim();
-  // Prefer country, then venue (when it isn't just a copy of the event title).
-  let place = country;
-  if (!place && venue && venue.toLowerCase() !== location.toLowerCase()) {
-    place = venue;
-  } else if (!place) {
-    place = venue;
-  }
+  const country = trimStr(eventLocation?.country) || trimStr(post.country);
+  const venue = trimStr(eventDetails?.venue) || trimStr(eventLocation?.name);
+  const address = resolvePostEventAddress(post);
 
   return {
     _id: String(post._id),
     postId: String(post._id),
     source: 'post',
     title: location,
-    // Keep `location` as place-or-title for older clients; prefer `place` / `country`.
-    location: place || location,
+    location: address || location,
     country,
-    place: place || null,
+    place: address || null,
+    address: address || null,
+    // Pass through so clients can render the exact Places payload.
+    eventLocation: eventLocation
+      ? {
+          placeId: trimStr(eventLocation.placeId) || undefined,
+          name: trimStr(eventLocation.name) || undefined,
+          formattedAddress: trimStr(eventLocation.formattedAddress) || undefined,
+          locality: trimStr(eventLocation.locality) || undefined,
+          street: trimStr(eventLocation.street) || undefined,
+          area: trimStr(eventLocation.area) || undefined,
+          city: trimStr(eventLocation.city) || undefined,
+          district: trimStr(eventLocation.district) || undefined,
+          state: trimStr(eventLocation.state) || undefined,
+          country: trimStr(eventLocation.country) || undefined,
+          postalCode: trimStr(eventLocation.postalCode) || undefined,
+          lat: eventLocation.lat,
+          lng: eventLocation.lng,
+        }
+      : null,
     image: String(post.imageUrl ?? ''),
     date,
     venue,
@@ -59,3 +101,4 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     isPast,
   };
 }
+

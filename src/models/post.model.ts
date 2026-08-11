@@ -47,7 +47,6 @@ const postSchema = new Schema(
   {
     authorId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     location: { type: String, required: true },
-    country: { type: String, default: '', index: true },
     status: { type: String, enum: ['been', 'going', 'interested'], required: true },
     imageUrl: { type: String, required: true },
     caption: { type: String, default: '' },

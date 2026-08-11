@@ -8,11 +8,16 @@ import {
 } from '../utils/share-metadata.js';
 
 export async function registerShareRoutes(app: FastifyInstance, env: Env): Promise<void> {
+  /** HTML + Open Graph for WhatsApp / iMessage / etc. Must be proxied at site root `/e/`. */
   app.get('/e/:postId', async (req, reply) => {
     const postId = (req.params as { postId: string }).postId;
     const post = await loadPublicPostForShare(postId);
 
-    reply.header('Content-Type', 'text/html; charset=utf-8');
+    reply
+      .header('Content-Type', 'text/html; charset=utf-8')
+      // Let crawlers re-fetch after event edits; WhatsApp still caches aggressively.
+      .header('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400');
+
     if (!post) {
       return reply.status(404).send(renderShareNotFoundPage());
     }

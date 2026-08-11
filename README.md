@@ -24,9 +24,28 @@ All variables are documented in [`.env.example`](./.env.example). For plain-lang
 4. Configure Nginx with `deploy/nginx/be-ther.com.conf`:
    - Copy file to `/etc/nginx/sites-available/be-ther.com.conf`
    - Create symlink in `/etc/nginx/sites-enabled/`
+   - **Required for WhatsApp previews:** `location /e/` must proxy to the API (not the marketing SPA). Without this, crawlers see bolt.new Open Graph tags.
    - `sudo nginx -t && sudo systemctl reload nginx`
 5. Enable HTTPS:
    - `sudo certbot --nginx -d be-ther.com -d www.be-ther.com`
+
+### Share link previews (WhatsApp / iMessage)
+
+Share URLs stay `https://be-ther.com/e/:postId` (`SHARE_WEB_BASE_URL`).
+
+| URL | What serves it | OG tags |
+| --- | --- | --- |
+| `/e/:id` (correct) | Fastify share route via Nginx | Event title, caption, photo |
+| `/e/:id` (broken) | Marketing SPA (`index.html`) | Generic “Be Ther” + bolt.new image |
+| `/api/e/:id` | Fastify (via `/api/` strip) | Event tags (works today; not used in app shares) |
+
+After fixing Nginx, re-check:
+
+```bash
+curl -s "https://be-ther.com/e/<postId>" | grep -E 'og:title|og:image'
+```
+
+WhatsApp caches previews — after deploy, paste the link in [Facebook Sharing Debugger](https://developers.facebook.com/tools/debug/) and click **Scrape Again**, or share a fresh URL.
 
 ### Jenkins pipeline
 

@@ -83,13 +83,15 @@ function mapPostToCalendarItem(
     parseEventDateToIso(post.eventDetails?.date) ??
     (post.createdAt ? new Date(post.createdAt).toISOString().slice(0, 10) : null);
 
-  const country = String(post.country ?? '').trim();
+  const country = String(
+    post.eventDetails?.eventLocation?.country ?? post.country ?? '',
+  ).trim();
   const venue = String(post.eventDetails?.venue ?? '').trim();
   const location = String(post.location ?? '').trim();
   const eventLocation = post.eventDetails?.eventLocation;
   const formattedAddress = String(eventLocation?.formattedAddress ?? '').trim();
   const placeName = String(eventLocation?.name ?? '').trim();
-  let place = country;
+  let place = formattedAddress || country;
   if (!place && venue && venue.toLowerCase() !== location.toLowerCase()) {
     place = venue;
   } else if (!place) {

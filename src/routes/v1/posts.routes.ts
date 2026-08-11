@@ -83,7 +83,6 @@ const eventLocationSchema = z.object({
 
 const createPostSchema = z.object({
   location: z.string().min(1).max(200),
-  country: z.string().max(200).optional(),
   status: z.enum(['been', 'going', 'interested']),
   imageUrl: z.string().min(4),
   caption: captionSchema,
@@ -194,16 +193,10 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
       const eventDetails = parsed.data.eventDetails;
       const eventLocation = eventDetails.eventLocation;
-      const countryFromPlace =
-        eventLocation.country?.trim() ||
-        eventLocation.city?.trim() ||
-        parsed.data.country?.trim() ||
-        '';
 
       const post = await PostModel.create({
         authorId,
         location: parsed.data.location,
-        country: countryFromPlace,
         status: parsed.data.status,
         imageUrl: parsed.data.imageUrl,
         caption: parsed.data.caption ?? '',

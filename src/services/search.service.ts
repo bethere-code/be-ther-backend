@@ -209,6 +209,51 @@ type ScoreOpts = {
   authorIdsByToken: Map<string, Set<string>>;
 };
 
+type EventLocationSearchFields = {
+  name?: string;
+  formattedAddress?: string;
+  locality?: string;
+  street?: string;
+  area?: string;
+  city?: string;
+  district?: string;
+  state?: string;
+  country?: string;
+  postalCode?: string;
+};
+
+const EVENT_LOCATION_SEARCH_PATHS = [
+  'eventDetails.eventLocation.name',
+  'eventDetails.eventLocation.formattedAddress',
+  'eventDetails.eventLocation.locality',
+  'eventDetails.eventLocation.street',
+  'eventDetails.eventLocation.area',
+  'eventDetails.eventLocation.city',
+  'eventDetails.eventLocation.district',
+  'eventDetails.eventLocation.state',
+  'eventDetails.eventLocation.country',
+  'eventDetails.eventLocation.postalCode',
+] as const;
+
+function eventLocationMatchesQuery(
+  loc: EventLocationSearchFields | undefined,
+  q: string,
+): boolean {
+  if (!loc) return false;
+  return (
+    containsInsensitive(loc.name, q) ||
+    containsInsensitive(loc.formattedAddress, q) ||
+    containsInsensitive(loc.locality, q) ||
+    containsInsensitive(loc.street, q) ||
+    containsInsensitive(loc.area, q) ||
+    containsInsensitive(loc.city, q) ||
+    containsInsensitive(loc.district, q) ||
+    containsInsensitive(loc.state, q) ||
+    containsInsensitive(loc.country, q) ||
+    containsInsensitive(loc.postalCode, q)
+  );
+}
+
 /**
  * Best field score for a single token.
  * Ranking: event name > description > place > date > author.
@@ -220,7 +265,13 @@ export function scoreTokenHit(
 ): number {
   const q = token.trim();
   if (!q) return 0;
-  const details = post.eventDetails as { venue?: string; date?: string } | undefined;
+  const details = post.eventDetails as
+      | {
+          venue?: string;
+          date?: string;
+          eventLocation?: EventLocationSearchFields;
+        }
+      | undefined;
   const tokenIso = parseSearchDateQuery(q);
   const tokenVariants = tokenIso ? dateSearchVariants(tokenIso) : [];
   const iso = tokenIso ?? opts.isoDate;
@@ -233,7 +284,12 @@ export function scoreTokenHit(
   if (containsInsensitive(post.caption, q)) {
     match = Math.max(match, SCORE.DESCRIPTION);
   }
-  if (containsInsensitive(post.country, q) || containsInsensitive(details?.venue, q)) {
+  if (
+    containsInsensitive(details?.venue, q) ||
+    eventLocationMatchesQuery(details?.eventLocation, q) ||
+    // Legacy posts that still have root country until cleaned up.
+    containsInsensitive(post.country, q)
+  ) {
     match = Math.max(match, SCORE.PLACE);
   }
   if (dateFieldMatches(details?.date, q, iso, variants)) {
@@ -341,10 +397,12 @@ function fieldMatchersForToken(token: string): Record<string, unknown>[] {
   const textRegex = { $regex: escaped, $options: 'i' as const };
   const matchers: Record<string, unknown>[] = [
     { location: textRegex },
-    { country: textRegex },
     { caption: textRegex },
     { 'eventDetails.venue': textRegex },
     { 'eventDetails.date': textRegex },
+    ...EVENT_LOCATION_SEARCH_PATHS.map((path) => ({ [path]: textRegex })),
+    // Legacy root country on older documents.
+    { country: textRegex },
   ];
 
   const isoDate = parseSearchDateQuery(token);
@@ -459,7 +517,18 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   if (countryFilter) {
     filter.$and = [
       ...(filter.$and as Record<string, unknown>[]),
-      { country: { $regex: escapeRegex(countryFilter), $options: 'i' } },
+      {
+        $or: [
+          {
+            'eventDetails.eventLocation.country': {
+              $regex: escapeRegex(countryFilter),
+              $options: 'i',
+            },
+          },
+          // Legacy posts that still store root country.
+          { country: { $regex: escapeRegex(countryFilter), $options: 'i' } },
+        ],
+      },
     ];
   }
 
