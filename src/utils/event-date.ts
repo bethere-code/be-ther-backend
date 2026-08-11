@@ -181,3 +181,51 @@ export function isPostEventPast(post: PostLike, now: Date = new Date()): boolean
   if (!iso) return false;
   return isEventPast(iso, ed?.time ?? undefined, now);
 }
+
+type ExploreSortPost = PostLike & {
+  _id?: unknown;
+  likesCount?: number;
+  commentsCount?: number;
+};
+
+function createdAtMs(post: PostLike): number {
+  if (!post.createdAt) return 0;
+  const t = new Date(post.createdAt).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** `YYYY-MM` for the event date; unknown dates sort last. */
+export function postEventMonthKey(post: PostLike): string {
+  const ed = post.eventDetails ?? undefined;
+  const iso =
+    parseEventDateToIso(ed?.date) ??
+    (post.createdAt
+      ? new Date(post.createdAt).toISOString().slice(0, 10)
+      : null);
+  if (!iso) return '9999-99';
+  return iso.slice(0, 7);
+}
+
+/**
+ * Explore ordering: nearer event months first, then within a month
+ * likes → comments → most recently posted.
+ */
+export function compareExplorePosts(a: ExploreSortPost, b: ExploreSortPost): number {
+  const monthA = postEventMonthKey(a);
+  const monthB = postEventMonthKey(b);
+  if (monthA !== monthB) return monthA < monthB ? -1 : 1;
+
+  const likesA = Number(a.likesCount ?? 0) || 0;
+  const likesB = Number(b.likesCount ?? 0) || 0;
+  if (likesA !== likesB) return likesB - likesA;
+
+  const commentsA = Number(a.commentsCount ?? 0) || 0;
+  const commentsB = Number(b.commentsCount ?? 0) || 0;
+  if (commentsA !== commentsB) return commentsB - commentsA;
+
+  const createdA = createdAtMs(a);
+  const createdB = createdAtMs(b);
+  if (createdA !== createdB) return createdB - createdA;
+
+  return String(b._id ?? '').localeCompare(String(a._id ?? ''));
+}

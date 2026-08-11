@@ -6,7 +6,7 @@ import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { areMutualFollowers } from '../../services/follow.service.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
-import { isPostEventPast } from '../../utils/event-date.js';
+import { compareExplorePosts, isPostEventPast } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
 
 export async function registerExploreV1Routes(app: FastifyInstance): Promise<void> {
@@ -22,11 +22,13 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       const upcoming: Record<string, unknown>[] = [];
       let cursor = 0;
 
-      while (upcoming.length < skip + limit + 1 && cursor < maxScan) {
+      // Scan a window of posts, then sort in memory so month priority is correct
+      // across the full candidate set (not just within each DB page).
+      while (cursor < maxScan) {
         const batch = await PostModel.find({
           $or: [{ isPrivate: false }, { authorId: req.userId }],
         })
-          .sort({ likesCount: -1, createdAt: -1, _id: -1 })
+          .sort({ createdAt: -1, _id: -1 })
           .skip(cursor)
           .limit(batchSize)
           .populate('authorId', 'username displayName avatarUrl')
@@ -42,6 +44,8 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
 
         if (batch.length < batchSize) break;
       }
+
+      upcoming.sort((a, b) => compareExplorePosts(a as never, b as never));
 
       const page = upcoming.slice(skip, skip + limit);
       const items = page.map(mapPostToExploreItem);
