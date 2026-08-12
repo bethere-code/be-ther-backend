@@ -357,9 +357,11 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         if (!existingOwn) {
           await CalendarModel.create({ postId, userId, status: nextStatus });
           await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
-        } else if (existingOwn.status !== nextStatus) {
-          existingOwn.status = nextStatus;
-          await existingOwn.save();
+        } else {
+          await CalendarModel.updateOne(
+            { _id: existingOwn._id },
+            { $set: { status: nextStatus } },
+          );
         }
         if (post.status === 'interested' || post.status === 'going') {
           await PostModel.updateOne({ _id: postId }, { $set: { status: nextStatus } });
@@ -399,10 +401,11 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
 
       if (existing) {
-        if (existing.status !== nextStatus) {
-          existing.status = nextStatus;
-          await existing.save();
-        }
+        // Always persist status with $set (schema default can mask missing DB field).
+        await CalendarModel.updateOne(
+          { _id: existing._id },
+          { $set: { status: nextStatus } },
+        );
         return reply.send({
           ok: true,
           data: { inCalendar: true, calendarStatus: nextStatus },
@@ -529,6 +532,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const [total, rows] = await Promise.all([
         CalendarModel.countDocuments({ postId: postObjectId }),
         CalendarModel.find({ postId: postObjectId })
+          .select('userId status createdAt')
           .sort({ createdAt: 1, _id: 1 })
           .skip(skip)
           .limit(limit)
@@ -552,16 +556,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
           if (!u || u instanceof Types.ObjectId || !u._id) return null;
           const username = (u.username ?? '').trim();
           if (!username) return null;
+          const rawStatus = (row as { status?: string }).status;
           const status =
-            row.status === 'interested' || row.status === 'going'
-              ? row.status
-              : 'going';
+            rawStatus === 'interested' || rawStatus === 'going' ? rawStatus : 'going';
           return {
             _id: String(u._id),
             username,
             displayName: (u.displayName ?? '').trim() || username,
             avatarUrl: u.avatarUrl ?? '',
             calendarStatus: status,
+            status,
           };
         })
         .filter(Boolean);
