@@ -10,6 +10,7 @@ import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden
 import { UserModel } from '../../models/user.model.js';
 import { areMutualFollowers, isFollowing, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
+import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
 /** Fields populated on calendar/feed authors. Badge paused — not included. */
 const AUTHOR_SELECT = 'username displayName avatarUrl';
@@ -493,6 +494,116 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
           });
         })
         .filter((item) => item.date != null);
+
+      return reply.send({ ok: true, data: { items } });
+    },
+  );
+
+  async function loadPublicProfileUser(username: string, viewerId: string) {
+    const user = await UserModel.findOne({ username }).select('_id settings').lean();
+    if (!user) return { error: 'not_found' as const };
+    const isOwn = String(user._id) === viewerId;
+    if (user.settings?.isPrivateProfile && !isOwn) {
+      const follows = await isFollowing(viewerId, String(user._id));
+      if (!follows) return { error: 'private' as const };
+    }
+    return { user, isOwn };
+  }
+
+  function mapConnectionUser(raw: unknown) {
+    if (!raw || typeof raw !== 'object') return null;
+    const u = raw as {
+      _id?: Types.ObjectId;
+      username?: string;
+      displayName?: string;
+      avatarUrl?: string;
+    };
+    const username = String(u.username ?? '').trim();
+    if (!username) return null;
+    return {
+      _id: u._id != null ? String(u._id) : '',
+      username,
+      displayName: String(u.displayName ?? '').trim() || username,
+      avatarUrl: String(u.avatarUrl ?? ''),
+    };
+  }
+
+  app.get(
+    '/api/v1/users/:username/events',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const viewerId = req.userId!;
+      const loaded = await loadPublicProfileUser(username, viewerId);
+      if ('error' in loaded) {
+        if (loaded.error === 'not_found') {
+          return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+        }
+        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+      }
+
+      const posts = await PostModel.find({ authorId: loaded.user._id })
+        .populate('authorId', AUTHOR_SELECT)
+        .sort({ createdAt: -1 })
+        .lean();
+
+      const visible = loaded.isOwn ? posts : posts.filter((p) => !p.isPrivate);
+      const enriched = await enrichPostsForViewer(visible as never[], viewerId);
+      return reply.send({ ok: true, data: { items: enriched } });
+    },
+  );
+
+  app.get(
+    '/api/v1/users/:username/followers',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const viewerId = req.userId!;
+      const loaded = await loadPublicProfileUser(username, viewerId);
+      if ('error' in loaded) {
+        if (loaded.error === 'not_found') {
+          return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+        }
+        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+      }
+
+      const edges = await FollowModel.find({ followingId: loaded.user._id })
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .populate('followerId', 'username displayName avatarUrl')
+        .lean();
+
+      const items = edges
+        .map((e) => mapConnectionUser(e.followerId))
+        .filter((u): u is NonNullable<typeof u> => u != null);
+
+      return reply.send({ ok: true, data: { items } });
+    },
+  );
+
+  app.get(
+    '/api/v1/users/:username/following',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const viewerId = req.userId!;
+      const loaded = await loadPublicProfileUser(username, viewerId);
+      if ('error' in loaded) {
+        if (loaded.error === 'not_found') {
+          return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+        }
+        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+      }
+
+      const edges = await FollowModel.find({ followerId: loaded.user._id })
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .populate('followingId', 'username displayName avatarUrl')
+        .lean();
+
+      const items = edges
+        .map((e) => mapConnectionUser(e.followingId))
+        .filter((u): u is NonNullable<typeof u> => u != null);
 
       return reply.send({ ok: true, data: { items } });
     },
