@@ -32,6 +32,62 @@ export async function areMutualFollowers(a: string, b: string): Promise<boolean>
   return aFollowsB && bFollowsA;
 }
 
+/**
+ * Outbound = people the viewer follows.
+ * Inbound = people who follow the viewer.
+ */
+export async function loadViewerFollowGraph(viewerId: string): Promise<{
+  iFollow: Set<string>;
+  followsMe: Set<string>;
+}> {
+  if (!Types.ObjectId.isValid(viewerId)) {
+    return { iFollow: new Set(), followsMe: new Set() };
+  }
+  const viewerOid = asObjectId(viewerId);
+  const [outbound, inbound] = await Promise.all([
+    FollowModel.find({ followerId: viewerOid }).select('followingId').lean(),
+    FollowModel.find({ followingId: viewerOid }).select('followerId').lean(),
+  ]);
+  return {
+    iFollow: new Set(outbound.map((e) => String(e.followingId))),
+    followsMe: new Set(inbound.map((e) => String(e.followerId))),
+  };
+}
+
+/**
+ * Lower = higher in RSVP / likes lists.
+ * 0 viewer self · 1 I follow · 2 mutual · 3 follows me · 4 everyone else
+ */
+export function viewerSocialRank(
+  targetUserId: string,
+  viewerId: string,
+  graph: { iFollow: Set<string>; followsMe: Set<string> },
+): number {
+  if (targetUserId === viewerId) return 0;
+  const out = graph.iFollow.has(targetUserId);
+  const inn = graph.followsMe.has(targetUserId);
+  if (out && !inn) return 1;
+  if (out && inn) return 2;
+  if (!out && inn) return 3;
+  return 4;
+}
+
+/** Stable sort by social graph, then optional secondary key (e.g. createdAt). */
+export function sortByViewerSocialGraph<T>(
+  items: T[],
+  viewerId: string,
+  graph: { iFollow: Set<string>; followsMe: Set<string> },
+  getUserId: (item: T) => string,
+  getSecondary: (item: T) => number = () => 0,
+): T[] {
+  return [...items].sort((a, b) => {
+    const ra = viewerSocialRank(getUserId(a), viewerId, graph);
+    const rb = viewerSocialRank(getUserId(b), viewerId, graph);
+    if (ra !== rb) return ra - rb;
+    return getSecondary(a) - getSecondary(b);
+  });
+}
+
 function clampCount(n: number | undefined): number {
   return Math.max(0, Number(n ?? 0));
 }

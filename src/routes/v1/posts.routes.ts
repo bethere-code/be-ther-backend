@@ -12,7 +12,7 @@ import { PostModel } from '../../models/post.model.js';
 import { PostReportModel } from '../../models/post-report.model.js';
 import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
-import { areMutualFollowers } from '../../services/follow.service.js';
+import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } from '../../services/follow.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
@@ -529,15 +529,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         }
       }
 
-      const [total, rows] = await Promise.all([
+      const [total, rows, graph] = await Promise.all([
         CalendarModel.countDocuments({ postId: postObjectId }),
         CalendarModel.find({ postId: postObjectId })
           .select('userId status createdAt')
-          .sort({ createdAt: 1, _id: 1 })
-          .skip(skip)
-          .limit(limit)
           .populate('userId', 'username displayName avatarUrl')
           .lean(),
+        loadViewerFollowGraph(userId),
       ]);
 
       // Heal drift: feed may show calendarCount while rows were deleted.
@@ -545,36 +543,55 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         void PostModel.updateOne({ _id: postObjectId }, { $set: { calendarCount: total } });
       }
 
-      const items = rows
-        .map((row) => {
-          const u = row.userId as
-            | { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string }
-            | Types.ObjectId
-            | null
-            | undefined;
-          // Deleted / missing user — skip rather than blank rows.
-          if (!u || u instanceof Types.ObjectId || !u._id) return null;
-          const username = (u.username ?? '').trim();
-          if (!username) return null;
-          const rawStatus = (row as { status?: string }).status;
-          const status =
-            rawStatus === 'interested' || rawStatus === 'going' ? rawStatus : 'going';
-          return {
-            _id: String(u._id),
-            username,
-            displayName: (u.displayName ?? '').trim() || username,
-            avatarUrl: u.avatarUrl ?? '',
-            calendarStatus: status,
-            status,
-          };
-        })
-        .filter(Boolean);
+      type AttendeeItem = {
+        _id: string;
+        username: string;
+        displayName: string;
+        avatarUrl: string;
+        calendarStatus: 'interested' | 'going';
+        status: 'interested' | 'going';
+        _createdAt: number;
+      };
 
-      const hasMore = skip + rows.length < total;
+      const mapped: AttendeeItem[] = [];
+      for (const row of rows) {
+        const u = row.userId as
+          | { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string }
+          | Types.ObjectId
+          | null
+          | undefined;
+        // Deleted / missing user — skip rather than blank rows.
+        if (!u || u instanceof Types.ObjectId || !u._id) continue;
+        const username = (u.username ?? '').trim();
+        if (!username) continue;
+        const rawStatus = (row as { status?: string }).status;
+        const status =
+          rawStatus === 'interested' || rawStatus === 'going' ? rawStatus : 'going';
+        mapped.push({
+          _id: String(u._id),
+          username,
+          displayName: (u.displayName ?? '').trim() || username,
+          avatarUrl: u.avatarUrl ?? '',
+          calendarStatus: status,
+          status,
+          _createdAt: row.createdAt ? new Date(row.createdAt).getTime() : 0,
+        });
+      }
+
+      // I follow → mutual → follows me → rest (viewer first when present).
+      const sorted = sortByViewerSocialGraph(
+        mapped,
+        userId,
+        graph,
+        (item) => item._id,
+        (item) => item._createdAt,
+      );
+      const page = sorted.slice(skip, skip + limit).map(({ _createdAt: _, ...item }) => item);
+      const hasMore = skip + page.length < sorted.length;
       return reply.send({
         ok: true,
         data: {
-          items,
+          items: page,
           total,
           nextSkip: hasMore ? skip + limit : null,
         },
@@ -607,34 +624,53 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(access.status).send({ ok: false, error: { message: access.message } });
       }
 
-      const [total, rows] = await Promise.all([
+      const [total, rows, graph] = await Promise.all([
         LikeModel.countDocuments({ postId: postObjectId }),
         LikeModel.find({ postId: postObjectId })
-          .sort({ createdAt: -1, _id: -1 })
-          .skip(skip)
-          .limit(limit)
           .populate('userId', COMMENT_AUTHOR_SELECT)
           .lean(),
+        loadViewerFollowGraph(userId),
       ]);
 
       if (skip === 0 && typeof post.likesCount === 'number' && post.likesCount !== total) {
         void PostModel.updateOne({ _id: postObjectId }, { $set: { likesCount: total } });
       }
 
-      const items = rows
-        .map((row) => {
-          const mapped = mapCommentAuthor(
-            row.userId as PopulatedCommentAuthor | Types.ObjectId | null | undefined,
-          );
-          return mapped;
-        })
-        .filter(Boolean);
+      type LikeItem = {
+        _id: string;
+        username: string;
+        displayName: string;
+        avatarUrl: string;
+        _createdAt: number;
+      };
 
-      const hasMore = skip + rows.length < total;
+      const mapped: LikeItem[] = [];
+      for (const row of rows) {
+        const mappedUser = mapCommentAuthor(
+          row.userId as PopulatedCommentAuthor | Types.ObjectId | null | undefined,
+        );
+        if (!mappedUser) continue;
+        mapped.push({
+          ...mappedUser,
+          _createdAt: row.createdAt ? new Date(row.createdAt as Date).getTime() : 0,
+        });
+      }
+
+      // I follow → mutual → follows me → rest (viewer first when present).
+      const sorted = sortByViewerSocialGraph(
+        mapped,
+        userId,
+        graph,
+        (item) => item._id,
+        // Newer likes first within the same social tier.
+        (item) => -item._createdAt,
+      );
+      const page = sorted.slice(skip, skip + limit).map(({ _createdAt: _, ...item }) => item);
+      const hasMore = skip + page.length < sorted.length;
       return reply.send({
         ok: true,
         data: {
-          items,
+          items: page,
           total,
           nextSkip: hasMore ? skip + limit : null,
         },
