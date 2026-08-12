@@ -22,16 +22,21 @@ export async function registerNotificationsV1Routes(app: FastifyInstance): Promi
 
       // Attach the viewer's calendar / like state so opening an event from
       // alerts matches feed (e.g. INTERESTED instead of ADD TO CALENDAR).
-      const posts = items
-        .map((n) => n.postId)
-        .filter((p): p is Record<string, unknown> => p != null && typeof p === 'object');
+      const posts: Record<string, unknown>[] = [];
+      for (const n of items) {
+        const p = n.postId;
+        if (p != null && typeof p === 'object' && !('_bsontype' in p) && '_id' in p) {
+          posts.push(p as Record<string, unknown>);
+        }
+      }
       const enrichedPosts = await enrichPostsForViewer(posts as never[], req.userId!);
       const byId = new Map(enrichedPosts.map((p) => [String(p._id), p]));
 
       const enrichedItems = items.map((n) => {
-        const raw = n.postId as { _id?: unknown } | null | undefined;
-        if (!raw || raw._id == null) return n;
-        const enriched = byId.get(String(raw._id));
+        const raw = n.postId;
+        if (raw == null || typeof raw !== 'object' || !('_id' in raw)) return n;
+        const id = String((raw as { _id: unknown })._id);
+        const enriched = byId.get(id);
         if (!enriched) return n;
         return { ...n, postId: enriched };
       });
