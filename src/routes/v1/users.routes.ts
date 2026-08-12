@@ -140,9 +140,8 @@ function mapPostToCalendarItem(
     bookmarked,
     isAuthoredByMe: extras?.isAuthoredByViewer ?? false,
     inCalendar: extras?.inCalendar ?? false,
-    calendarStatus:
-      extras?.calendarStatus ??
-      (extras?.isAuthoredByViewer ? 'going' : extras?.inCalendar ? 'going' : null),
+    // Always the authenticated viewer's RSVP — never the profile owner's.
+    calendarStatus: extras?.calendarStatus ?? null,
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
     authorId: mapAuthor(post.authorId),
   };
@@ -410,14 +409,6 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       const profileCalendar = await CalendarModel.find({ userId: user._id })
         .select('postId status')
         .lean();
-      const profileCalendarSet = new Set(profileCalendar.map((c) => String(c.postId)));
-      const profileCalendarStatus = new Map<string, 'interested' | 'going'>();
-      for (const entry of profileCalendar) {
-        profileCalendarStatus.set(
-          String(entry.postId),
-          entry.status === 'interested' ? 'interested' : 'going',
-        );
-      }
 
       const postIds = new Set<string>();
       const mergedPosts: Array<{ post: LeanPost; source: 'authored' | 'calendar' }> = [];
@@ -449,15 +440,34 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
 
       const bookmarkedSet = new Set<string>();
+      // Viewer RSVP only — never the profile owner's calendar status.
+      const viewerCalendarStatus = new Map<string, 'interested' | 'going'>();
       if (mergedPosts.length > 0) {
-        const bookmarks = await BookmarkModel.find({
-          userId: viewerId,
-          postId: { $in: [...postIds] },
-        })
-          .select('postId')
-          .lean();
+        const objectIds = [...postIds]
+          .filter((id) => Types.ObjectId.isValid(id))
+          .map((id) => new Types.ObjectId(id));
+        const [bookmarks, viewerCalendar] = await Promise.all([
+          BookmarkModel.find({
+            userId: viewerId,
+            postId: { $in: objectIds },
+          })
+            .select('postId')
+            .lean(),
+          CalendarModel.find({
+            userId: viewerId,
+            postId: { $in: objectIds },
+          })
+            .select('postId status')
+            .lean(),
+        ]);
         for (const bookmark of bookmarks) {
           bookmarkedSet.add(String(bookmark.postId));
+        }
+        for (const entry of viewerCalendar) {
+          viewerCalendarStatus.set(
+            String(entry.postId),
+            entry.status === 'interested' ? 'interested' : 'going',
+          );
         }
       }
 
@@ -468,15 +478,18 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
             post.authorId && typeof post.authorId === 'object' && '_id' in post.authorId
               ? String((post.authorId as PopulatedAuthor)._id)
               : String(post.authorId);
+          const isAuthoredByViewer = String(authorId) === viewerId;
+          const fromViewer = viewerCalendarStatus.get(id) ?? null;
+          // Authors are always on their own calendar; everyone else uses their row only.
+          const calendarStatus: 'interested' | 'going' | null = isAuthoredByViewer
+            ? (fromViewer ??
+                (post.status === 'interested' ? 'interested' : 'going'))
+            : fromViewer;
           return mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
-            isAuthoredByViewer: String(authorId) === viewerId,
-            inCalendar: profileCalendarSet.has(id) || String(authorId) === String(user._id),
+            isAuthoredByViewer,
+            inCalendar: calendarStatus != null,
             hiddenOnProfile: hiddenSet.has(id),
-            calendarStatus:
-              String(authorId) === viewerId
-                ? (profileCalendarStatus.get(id) ??
-                    (post.status === 'interested' ? 'interested' : 'going'))
-                : (profileCalendarStatus.get(id) ?? null),
+            calendarStatus,
           });
         })
         .filter((item) => item.date != null);

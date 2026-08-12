@@ -413,7 +413,10 @@ export async function loginWithGoogle(env: Env, idToken: string): Promise<{ acce
   return { accessToken, refreshToken, user: user!.toJSON() };
 }
 
-export async function refreshTokens(env: Env, refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
+export async function refreshTokens(
+  env: Env,
+  refreshToken: string,
+): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const payload = verifyRefreshToken(env, refreshToken);
   const user = await UserModel.findById(payload.sub);
   if (!user || user.tokenVersion !== payload.ver) {
@@ -422,5 +425,6 @@ export async function refreshTokens(env: Env, refreshToken: string): Promise<{ a
   return {
     accessToken: signAccessToken(env, String(user._id)),
     refreshToken: signRefreshToken(env, String(user._id), user.tokenVersion),
+    user: user.toJSON(),
   };
 }

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import { NotificationModel } from '../../models/notification.model.js';
+import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
 export async function registerNotificationsV1Routes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -11,9 +12,31 @@ export async function registerNotificationsV1Routes(app: FastifyInstance): Promi
         .sort({ createdAt: -1 })
         .limit(100)
         .populate('actorUserId', 'username displayName avatarUrl')
-        .populate('postId', 'location imageUrl caption status eventDetails')
+        .populate({
+          path: 'postId',
+          select:
+            'location imageUrl caption status eventDetails authorId likesCount commentsCount calendarCount',
+          populate: { path: 'authorId', select: 'username displayName avatarUrl' },
+        })
         .lean();
-      return reply.send({ ok: true, data: { items } });
+
+      // Attach the viewer's calendar / like state so opening an event from
+      // alerts matches feed (e.g. INTERESTED instead of ADD TO CALENDAR).
+      const posts = items
+        .map((n) => n.postId)
+        .filter((p): p is Record<string, unknown> => p != null && typeof p === 'object');
+      const enrichedPosts = await enrichPostsForViewer(posts as never[], req.userId!);
+      const byId = new Map(enrichedPosts.map((p) => [String(p._id), p]));
+
+      const enrichedItems = items.map((n) => {
+        const raw = n.postId as { _id?: unknown } | null | undefined;
+        if (!raw || raw._id == null) return n;
+        const enriched = byId.get(String(raw._id));
+        if (!enriched) return n;
+        return { ...n, postId: enriched };
+      });
+
+      return reply.send({ ok: true, data: { items: enrichedItems } });
     },
   );
 
