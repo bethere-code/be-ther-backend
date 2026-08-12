@@ -552,11 +552,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
           if (!u || u instanceof Types.ObjectId || !u._id) return null;
           const username = (u.username ?? '').trim();
           if (!username) return null;
+          const status =
+            row.status === 'interested' || row.status === 'going'
+              ? row.status
+              : 'going';
           return {
             _id: String(u._id),
             username,
             displayName: (u.displayName ?? '').trim() || username,
             avatarUrl: u.avatarUrl ?? '',
+            calendarStatus: status,
           };
         })
         .filter(Boolean);
