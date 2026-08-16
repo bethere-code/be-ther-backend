@@ -35,12 +35,16 @@ const signupPasswordSchema = z
   .regex(/^.{8,}$/, 'Password must be at least 8 characters');
 
 const signupRequestOtpSchema = z.object({
-  displayName: z.string().trim().min(1, 'Name is required').max(80),
+  // Length includes spaces (trimmed only for empty check via min(1) on trim).
+  displayName: z
+    .string()
+    .refine((v) => v.trim().length >= 1, 'Name is required')
+    .refine((v) => v.length <= 30, 'Name must be at most 30 characters'),
   username: z
     .string()
     .trim()
     .min(3)
-    .max(32)
+    .max(20)
     .regex(/^[a-z0-9]+$/, 'Username: lowercase letters and digits only, no spaces'),
   email: z.string().email(),
   password: signupPasswordSchema,
