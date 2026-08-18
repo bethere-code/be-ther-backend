@@ -334,7 +334,10 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     if (user.settings?.isPrivateProfile && String(user._id) !== req.userId) {
       const follows = await isFollowing(req.userId!, String(user._id));
       if (!follows) {
-        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        // Still return the public card so the app can render a lock + Follow.
+        // Calendar / events / connections stay 403 until they follow.
+        const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
+        return reply.send({ ok: true, data });
       }
     }
     const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
