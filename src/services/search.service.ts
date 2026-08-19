@@ -485,28 +485,37 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   } else if (monthOnlyQuery) {
     tokenClauses.push({ $or: monthFieldMatchers(monthOnlyQuery) });
   } else {
-    for (const token of tokens) {
-      const matchers = fieldMatchersForToken(token);
-      const escaped = escapeRegex(token);
-      const textRegex = { $regex: escaped, $options: 'i' as const };
+    const authorHits = await Promise.all(
+      tokens.map(async (token) => {
+        const matchers = fieldMatchersForToken(token);
+        const escaped = escapeRegex(token);
+        const textRegex = { $regex: escaped, $options: 'i' as const };
+        const usernameExact = token.toLowerCase();
 
-      const matchingAuthors = await UserModel.find({
-        $or: [{ username: textRegex }, { displayName: textRegex }],
-      })
-        .select('_id')
-        .limit(50)
-        .lean();
+        const matchingAuthors = await UserModel.find({
+          $or: [
+            { username: usernameExact },
+            { username: textRegex },
+            { displayName: textRegex },
+          ],
+        })
+          .select('_id')
+          .limit(50)
+          .lean();
 
-      const authorIds = new Set(matchingAuthors.map((u) => String(u._id)));
-      authorIdsByToken.set(token.toLowerCase(), authorIds);
+        const authorIds = new Set(matchingAuthors.map((u) => String(u._id)));
+        if (matchingAuthors.length > 0) {
+          matchers.push({
+            authorId: { $in: matchingAuthors.map((u) => u._id) },
+          });
+        }
+        return { token, matchers, authorIds };
+      }),
+    );
 
-      if (matchingAuthors.length > 0) {
-        matchers.push({
-          authorId: { $in: matchingAuthors.map((u) => u._id) },
-        });
-      }
-
-      tokenClauses.push({ $or: matchers });
+    for (const hit of authorHits) {
+      authorIdsByToken.set(hit.token.toLowerCase(), hit.authorIds);
+      tokenClauses.push({ $or: hit.matchers });
     }
   }
 
@@ -536,7 +545,6 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   const candidates = (await PostModel.find(filter)
     .sort({ createdAt: -1, _id: -1 })
     .limit(MAX_CANDIDATES)
-    .populate('authorId', 'username displayName avatarUrl')
     .lean()) as ScoredPost[];
 
   const isoDate = parseSearchDateQuery(query);
@@ -556,6 +564,7 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
 
   const page = ranked.slice(skip, skip + limit);
   const hasMore = ranked.length > skip + limit;
+  await PostModel.populate(page, { path: 'authorId', select: 'username displayName avatarUrl' });
   const enriched = await enrichPostsForViewer(page as never[], params.viewerId);
   const items = enriched.map((post) => mapPostToExploreItem(post));
 

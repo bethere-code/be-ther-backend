@@ -62,6 +62,9 @@ const postSchema = new Schema(
 );
 
 postSchema.index({ createdAt: -1, _id: -1 });
+postSchema.index({ authorId: 1, createdAt: -1 });
+postSchema.index({ isPrivate: 1, createdAt: -1, _id: -1 });
+postSchema.index({ 'eventDetails.date': 1 });
 postSchema.index({ 'eventDetails.eventLocation.city': 1 });
 postSchema.index({ 'eventDetails.eventLocation.state': 1 });
 postSchema.index({ 'eventDetails.eventLocation.country': 1 });

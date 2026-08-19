@@ -43,7 +43,7 @@ const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
     username: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
-    displayName: { type: String, required: true, trim: true },
+    displayName: { type: String, required: true, trim: true, index: true },
     avatarUrl: { type: String, default: '' },
     bio: { type: String, default: '' },
     googleSub: { type: String, unique: true, sparse: true, index: true },

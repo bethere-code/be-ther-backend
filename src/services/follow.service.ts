@@ -12,23 +12,43 @@ function asObjectId(id: string): Types.ObjectId {
 }
 
 export async function isFollowing(followerId: string, followingId: string): Promise<boolean> {
-  if (!Types.ObjectId.isValid(followerId) || !Types.ObjectId.isValid(followingId)) {
-    return false;
+  const pair = await followPair(followerId, followingId);
+  return pair.aFollowsB;
+}
+
+/** One query for both follow directions between two users. */
+export async function followPair(
+  a: string,
+  b: string,
+): Promise<{ aFollowsB: boolean; bFollowsA: boolean }> {
+  if (!Types.ObjectId.isValid(a) || !Types.ObjectId.isValid(b) || a === b) {
+    return { aFollowsB: false, bFollowsA: false };
   }
-  return Boolean(
-    await FollowModel.exists({
-      followerId: asObjectId(followerId),
-      followingId: asObjectId(followingId),
-    }),
-  );
+  const aId = asObjectId(a);
+  const bId = asObjectId(b);
+  const rows = await FollowModel.find({
+    $or: [
+      { followerId: aId, followingId: bId },
+      { followerId: bId, followingId: aId },
+    ],
+  })
+    .select('followerId followingId')
+    .lean();
+
+  let aFollowsB = false;
+  let bFollowsA = false;
+  for (const row of rows) {
+    const from = String(row.followerId);
+    const to = String(row.followingId);
+    if (from === a && to === b) aFollowsB = true;
+    if (from === b && to === a) bFollowsA = true;
+  }
+  return { aFollowsB, bFollowsA };
 }
 
 /** Both users follow each other (DM unlock, private calendar, notification copy). */
 export async function areMutualFollowers(a: string, b: string): Promise<boolean> {
-  const [aFollowsB, bFollowsA] = await Promise.all([
-    isFollowing(a, b),
-    isFollowing(b, a),
-  ]);
+  const { aFollowsB, bFollowsA } = await followPair(a, b);
   return aFollowsB && bFollowsA;
 }
 

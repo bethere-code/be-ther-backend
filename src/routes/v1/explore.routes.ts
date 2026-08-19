@@ -9,6 +9,10 @@ import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { compareExplorePosts, isPostEventPast } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
 
+const EXPLORE_SCAN_LIMIT = 400;
+const EXPLORE_PAGE_SIZE = 50;
+const AUTHOR_SELECT = 'username displayName avatarUrl';
+
 export async function registerExploreV1Routes(app: FastifyInstance): Promise<void> {
   app.get(
     '/api/v1/explore/events',
@@ -16,39 +20,23 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
     async (req, reply) => {
       const q = req.query as { skip?: string };
       const skip = Math.max(0, Number(q.skip ?? 0) || 0);
-      const limit = 50;
-      const batchSize = 80;
-      const maxScan = 400;
-      const upcoming: Record<string, unknown>[] = [];
-      let cursor = 0;
+      const limit = EXPLORE_PAGE_SIZE;
 
-      // Scan a window of posts, then sort in memory so month priority is correct
-      // across the full candidate set (not just within each DB page).
-      while (cursor < maxScan) {
-        const batch = await PostModel.find({
-          $or: [{ isPrivate: false }, { authorId: req.userId }],
-        })
-          .sort({ createdAt: -1, _id: -1 })
-          .skip(cursor)
-          .limit(batchSize)
-          .populate('authorId', 'username displayName avatarUrl')
-          .lean();
+      // Same window as before (400 newest visible posts), one round-trip.
+      const scanned = await PostModel.find({
+        $or: [{ isPrivate: false }, { authorId: req.userId }],
+      })
+        .sort({ createdAt: -1, _id: -1 })
+        .limit(EXPLORE_SCAN_LIMIT)
+        .lean();
 
-        if (batch.length === 0) break;
-        cursor += batch.length;
-
-        const enriched = await enrichPostsForViewer(batch as never[], req.userId!);
-        for (const post of enriched) {
-          if (!isPostEventPast(post as never)) upcoming.push(post);
-        }
-
-        if (batch.length < batchSize) break;
-      }
-
+      const upcoming = scanned.filter((post) => !isPostEventPast(post as never));
       upcoming.sort((a, b) => compareExplorePosts(a as never, b as never));
 
       const page = upcoming.slice(skip, skip + limit);
-      const items = page.map(mapPostToExploreItem);
+      await PostModel.populate(page, { path: 'authorId', select: AUTHOR_SELECT });
+      const enriched = await enrichPostsForViewer(page as never[], req.userId!);
+      const items = enriched.map(mapPostToExploreItem);
       const hasMore = upcoming.length > skip + limit;
       return reply.send({
         ok: true,

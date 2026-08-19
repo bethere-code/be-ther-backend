@@ -8,7 +8,7 @@ import { FollowModel } from '../../models/follow.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../../models/user.model.js';
-import { areMutualFollowers, isFollowing, toggleFollow } from '../../services/follow.service.js';
+import { areMutualFollowers, followPair, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
@@ -162,10 +162,9 @@ async function enrichUserForViewer(
   let canDM = false;
 
   if (!isOwnProfile && viewerId) {
-    viewerFollows = await isFollowing(viewerId, userId);
-    if (viewerFollows) {
-      canDM = await areMutualFollowers(viewerId, userId);
-    }
+    const pair = await followPair(viewerId, userId);
+    viewerFollows = pair.aFollowsB;
+    canDM = pair.aFollowsB && pair.bFollowsA;
   }
 
   // Prefer denormalized counters (O(1)). Fall back only if fields are missing on old docs.
@@ -385,31 +384,41 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         }
       }
 
-      const authored = await PostModel.find({ authorId: user._id })
-        .select(
-          'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount',
-        )
-        .populate('authorId', AUTHOR_SELECT)
-        .sort({ createdAt: -1 })
-        .lean();
+      const authoredFilter: Record<string, unknown> = { authorId: user._id };
+      if (!isOwnProfile) authoredFilter.isPrivate = false;
 
-      const visibleAuthored = isOwnProfile
-        ? authored
-        : authored.filter((post) => !post.isPrivate);
+      const CALENDAR_POST_SELECT =
+        'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount';
 
-      const hiddenOnProfile = await ProfileCalendarHiddenModel.find({ profileUserId: user._id })
-        .select('postId')
-        .lean();
+      const [authoredRaw, hiddenOnProfile, profileCalendar, owner] = await Promise.all([
+        PostModel.find(authoredFilter)
+          .select(CALENDAR_POST_SELECT)
+          .sort({ createdAt: -1 })
+          .lean(),
+        ProfileCalendarHiddenModel.find({ profileUserId: user._id }).select('postId').lean(),
+        isOwnProfile
+          ? CalendarModel.find({ userId: user._id }).select('postId status').lean()
+          : Promise.resolve([] as Array<{ postId: Types.ObjectId; status?: string }>),
+        UserModel.findById(user._id).select('_id username displayName avatarUrl').lean(),
+      ]);
+
+      const ownerAuthor: PopulatedAuthor = {
+        _id: user._id as Types.ObjectId,
+        username: owner?.username ?? '',
+        displayName: owner?.displayName ?? owner?.username ?? '',
+        avatarUrl: owner?.avatarUrl ?? '',
+      };
+      const authored = authoredRaw.map((post) => ({
+        ...post,
+        authorId: ownerAuthor,
+      }));
+
       const hiddenSet = new Set(hiddenOnProfile.map((h) => String(h.postId)));
-
-      const profileCalendar = await CalendarModel.find({ userId: user._id })
-        .select('postId status')
-        .lean();
 
       const postIds = new Set<string>();
       const mergedPosts: Array<{ post: LeanPost; source: 'authored' | 'calendar' }> = [];
 
-      for (const post of visibleAuthored) {
+      for (const post of authored) {
         const id = String(post._id);
         if (!isOwnProfile && hiddenSet.has(id)) continue;
         if (postIds.has(id)) continue;
@@ -421,9 +430,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         const savedIds = profileCalendar.map((entry) => entry.postId);
         if (savedIds.length > 0) {
           const savedPosts = await PostModel.find({ _id: { $in: savedIds } })
-            .select(
-              'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount',
-            )
+            .select(CALENDAR_POST_SELECT)
             .populate('authorId', AUTHOR_SELECT)
             .lean();
           for (const post of savedPosts) {
@@ -449,12 +456,14 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
           })
             .select('postId')
             .lean(),
-          CalendarModel.find({
-            userId: viewerId,
-            postId: { $in: objectIds },
-          })
-            .select('postId status')
-            .lean(),
+          isOwnProfile
+            ? Promise.resolve(profileCalendar)
+            : CalendarModel.find({
+                userId: viewerId,
+                postId: { $in: objectIds },
+              })
+                .select('postId status')
+                .lean(),
         ]);
         for (const bookmark of bookmarks) {
           bookmarkedSet.add(String(bookmark.postId));
@@ -537,13 +546,21 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
-      const posts = await PostModel.find({ authorId: loaded.user._id })
-        .populate('authorId', AUTHOR_SELECT)
-        .sort({ createdAt: -1 })
-        .lean();
+      const postsFilter: Record<string, unknown> = { authorId: loaded.user._id };
+      if (!loaded.isOwn) postsFilter.isPrivate = false;
 
-      const visible = loaded.isOwn ? posts : posts.filter((p) => !p.isPrivate);
-      const enriched = await enrichPostsForViewer(visible as never[], viewerId);
+      const [postsRaw, owner] = await Promise.all([
+        PostModel.find(postsFilter).sort({ createdAt: -1 }).lean(),
+        UserModel.findById(loaded.user._id).select('_id username displayName avatarUrl').lean(),
+      ]);
+      const ownerAuthor = {
+        _id: loaded.user._id,
+        username: owner?.username ?? '',
+        displayName: owner?.displayName ?? owner?.username ?? '',
+        avatarUrl: owner?.avatarUrl ?? '',
+      };
+      const posts = postsRaw.map((post) => ({ ...post, authorId: ownerAuthor }));
+      const enriched = await enrichPostsForViewer(posts as never[], viewerId);
       return reply.send({ ok: true, data: { items: enriched } });
     },
   );

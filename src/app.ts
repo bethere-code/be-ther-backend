@@ -65,13 +65,14 @@ export async function buildApp(env: Env) {
   await registerShareRoutes(app, env);
   await registerV1Api(app, env);
 
-  app.addHook('onRequest', async (req) => {
-    req.log.info(`-> ${req.method} ${req.url}`);
-  });
-
-  app.addHook('onResponse', async (req, reply) => {
-    req.log.info(`<-${reply.statusCode} ${req.method} ${req.url} (${reply.elapsedTime.toFixed(1)}ms)`);
-  });
+  if (env.NODE_ENV === 'development') {
+    app.addHook('onRequest', async (req) => {
+      req.log.info(`-> ${req.method} ${req.url}`);
+    });
+    app.addHook('onResponse', async (req, reply) => {
+      req.log.info(`<-${reply.statusCode} ${req.method} ${req.url} (${reply.elapsedTime.toFixed(1)}ms)`);
+    });
+  }
 
   app.addHook('onError', async (req, reply, err) => {
     req.log.error(`${reply.statusCode} ${req.method} ${req.url} - ${err.message}`);

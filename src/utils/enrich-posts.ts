@@ -4,7 +4,6 @@ import { BookmarkModel } from '../models/bookmark.model.js';
 import { CalendarModel } from '../models/calendar.model.js';
 import { ExploreBookmarkModel } from '../models/explore-bookmark.model.js';
 import { LikeModel } from '../models/like.model.js';
-import { PostModel } from '../models/post.model.js';
 import { isPostEventPast } from './event-date.js';
 
 type PopulatedAuthor = {
@@ -65,38 +64,6 @@ export async function enrichPostsForViewer(
     calendarStatusByPost.set(String(c.postId), status);
   }
 
-  // Heal older own posts created before "author always on calendar" —
-  // upsert calendar rows so attendees count / sheet stay accurate.
-  const healedCalendarCounts = new Map<string, number>();
-  for (const post of posts) {
-    const id = String(post._id);
-    const authorRaw = post.authorId as PopulatedAuthor | Types.ObjectId | undefined;
-    const authorId =
-      authorRaw && typeof authorRaw === 'object' && '_id' in authorRaw && authorRaw._id
-        ? String(authorRaw._id)
-        : authorRaw != null
-          ? String(authorRaw)
-          : '';
-    if (!authorId || authorId !== viewerId || calendarStatusByPost.has(id)) continue;
-
-    const seedStatus =
-      post.status === 'interested' ? ('interested' as const) : ('going' as const);
-    try {
-      await CalendarModel.create({
-        postId: post._id,
-        userId: new Types.ObjectId(viewerId),
-        status: seedStatus,
-      });
-      await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
-      const prev = typeof post.calendarCount === 'number' ? post.calendarCount : 0;
-      healedCalendarCounts.set(id, prev + 1);
-      calendarStatusByPost.set(id, seedStatus);
-    } catch {
-      // Duplicate key / race — treat as already on calendar.
-      calendarStatusByPost.set(id, seedStatus);
-    }
-  }
-
   return posts.map((post) => {
     const id = String(post._id);
     const author = enrichAuthor(post.authorId as PopulatedAuthor | Types.ObjectId | undefined);
@@ -117,11 +84,10 @@ export async function enrichPostsForViewer(
       : (fromCalendar ?? null);
     return {
       ...post,
-      ...(healedCalendarCounts.has(id) ? { calendarCount: healedCalendarCounts.get(id) } : {}),
       authorId: author,
       liked: likedSet.has(id),
       bookmarked: bookmarkedSet.has(id),
-      // Own events are always on the author's calendar.
+      // Own events are always on the author's calendar (row or post.status).
       inCalendar: calendarStatus != null,
       calendarStatus,
       isEventPast: isPostEventPast(post as Parameters<typeof isPostEventPast>[0]),
