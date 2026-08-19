@@ -340,6 +340,38 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.get(
+    '/api/v1/users/me/blocks',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const rows = await BlockModel.find({ blockerId: req.userId })
+        .sort({ createdAt: -1 })
+        .populate('blockedId', 'username displayName avatarUrl')
+        .lean();
+      const items = rows
+        .map((row) => {
+          const raw = row.blockedId;
+          if (!raw || typeof raw !== 'object') return null;
+          const u = raw as {
+            _id?: Types.ObjectId;
+            username?: string;
+            displayName?: string;
+            avatarUrl?: string;
+          };
+          const username = String(u.username ?? '').trim();
+          if (!username) return null;
+          return {
+            _id: u._id != null ? String(u._id) : '',
+            username,
+            displayName: String(u.displayName ?? '').trim() || username,
+            avatarUrl: String(u.avatarUrl ?? ''),
+          };
+        })
+        .filter(Boolean);
+      return reply.send({ ok: true, data: { items } });
+    },
+  );
+
   app.get('/api/v1/users/:username', { preHandler: [app.authenticate] }, async (req, reply) => {
     const username = String((req.params as { username: string }).username).toLowerCase();
     const user = await UserModel.findOne({ username }).lean();
