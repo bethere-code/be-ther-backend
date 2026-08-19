@@ -19,6 +19,7 @@ import './models/explore-bookmark.model.js';
 import './models/profile-calendar-hidden.model.js';
 import './models/post-report.model.js';
 import './models/post-view.model.js';
+import './models/analytics-event.model.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();

@@ -13,6 +13,9 @@ const schema = z
     JWT_ACCESS_TTL_SEC: z.coerce.number().int().positive().default(900),
     JWT_REFRESH_TTL_SEC: z.coerce.number().int().positive().default(60 * 60 * 24 * 30),
 
+    /** Comma-separated admin@email:password pairs. Empty disables admin login. */
+    ADMIN_LOGINS: z.string().default(''),
+
     GOOGLE_WEB_CLIENT_ID: z.string().min(1),
     /** Places Autocomplete + Details (+ Geocoding reverse). Server-only — never ship to the app. */
     GOOGLE_PLACES_API_KEY: z.string().min(10).optional(),

@@ -214,9 +214,11 @@ async function enrichUserForViewer(
     badge: null,
     joined: formatJoinedDate(user.createdAt as Date | string | undefined),
   };
-  if (!isOwnProfile) {
-    delete payload.devicePermissions;
-  }
+  delete payload.devicePermissions;
+  delete payload.firstDevice;
+  delete payload.lastDevice;
+  delete payload.fcmToken;
+  delete payload.passwordHash;
   return payload;
 }
 

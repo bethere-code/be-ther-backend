@@ -15,18 +15,39 @@ import {
   verifySignupOtp,
 } from '../../services/auth.service.js';
 
+const deviceSchema = z
+  .object({
+    platform: z.string().trim().min(1).max(32),
+    model: z.string().trim().max(80).optional(),
+    os: z.string().trim().max(40).optional(),
+    appVersion: z.string().trim().max(32).optional(),
+    appBuild: z.string().trim().max(16).optional(),
+    deviceId: z.string().trim().max(128).optional(),
+  })
+  .optional();
+
+const fcmTokenSchema = z.string().trim().max(4096).optional();
 const otpRequestSchema = z.object({ email: z.string().email() });
-const otpVerifySchema = z.object({ email: z.string().email(), code: z.string().min(4).max(8) });
+const otpVerifySchema = z.object({
+  email: z.string().email(),
+  code: z.string().min(4).max(8),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
+});
 const loginOtpRequestSchema = z.object({
   identifier: z.string().trim().min(3),
 });
 const loginOtpVerifySchema = z.object({
   identifier: z.string().trim().min(3),
   code: z.string().length(6),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
 });
 const loginPasswordSchema = z.object({
   identifier: z.string().trim().min(3),
   password: z.string().min(8),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
 });
 
 const signupPasswordSchema = z
@@ -54,12 +75,18 @@ const signupRequestOtpSchema = z.object({
 const signupVerifySchema = z.object({
   email: z.string().email(),
   code: z.string().length(6),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
 });
 const signupAvailabilitySchema = z.object({
   username: z.string().optional(),
   email: z.string().optional(),
 });
-const googleSchema = z.object({ idToken: z.string().min(10) });
+const googleSchema = z.object({
+  idToken: z.string().min(10),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
+});
 const refreshSchema = z.object({ refreshToken: z.string().min(10) });
 
 export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Promise<void> {
@@ -83,7 +110,12 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
       return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const data = await verifyLoginOtp(env, parsed.data.identifier, parsed.data.code);
+      const data = await verifyLoginOtp(
+        env,
+        parsed.data.identifier,
+        parsed.data.code,
+        { device: parsed.data.device, fcmToken: parsed.data.fcmToken },
+      );
       return reply.send({ ok: true, data });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Verification failed';
@@ -101,6 +133,7 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
         env,
         parsed.data.identifier,
         parsed.data.password,
+        { device: parsed.data.device, fcmToken: parsed.data.fcmToken },
       );
       return reply.send({ ok: true, data });
     } catch (err) {
@@ -146,7 +179,10 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
       return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const tokens = await verifyOtp(env, parsed.data.email, parsed.data.code);
+      const tokens = await verifyOtp(env, parsed.data.email, parsed.data.code, {
+        device: parsed.data.device,
+        fcmToken: parsed.data.fcmToken,
+      });
       return reply.send({ ok: true, data: tokens });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Verification failed';
@@ -190,7 +226,10 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
       return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const tokens = await verifySignupOtp(env, parsed.data.email, parsed.data.code);
+      const tokens = await verifySignupOtp(env, parsed.data.email, parsed.data.code, {
+        device: parsed.data.device,
+        fcmToken: parsed.data.fcmToken,
+      });
       return reply.send({ ok: true, data: tokens });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Verification failed';
@@ -204,7 +243,10 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
       return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const tokens = await loginWithGoogle(env, parsed.data.idToken);
+      const tokens = await loginWithGoogle(env, parsed.data.idToken, {
+        device: parsed.data.device,
+        fcmToken: parsed.data.fcmToken,
+      });
       return reply.send({ ok: true, data: tokens });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Google login failed';

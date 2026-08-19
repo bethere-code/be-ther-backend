@@ -8,6 +8,12 @@ import { verifyGoogleIdToken } from '../lib/google.js';
 import { savePublicObject } from '../lib/storage.js';
 import { OtpChallengeModel } from '../models/otp-challenge.model.js';
 import { UserModel } from '../models/user.model.js';
+import {
+  applyDeviceSnapshot,
+  normalizeDeviceInput,
+  type DeviceSnapshot,
+  type DeviceSnapshotInput,
+} from '../utils/device-snapshot.js';
 
 export const USERNAME_SIGNUP_REGEX = /^[a-z0-9]{3,32}$/;
 
@@ -41,6 +47,48 @@ function defaultUserSettings() {
     pushEnabled: true,
     calendarView: 'full' as const,
   };
+}
+
+export type AuthClientMeta = {
+  device?: DeviceSnapshotInput | null;
+  fcmToken?: string | null;
+};
+
+function stampAuthClient(
+  user: {
+    firstDevice?: DeviceSnapshot | null;
+    lastDevice?: DeviceSnapshot | null;
+    fcmToken?: string;
+    set: (path: string, val: unknown) => void;
+  },
+  meta: AuthClientMeta | undefined,
+  isNewUser: boolean,
+): void {
+  const incoming = normalizeDeviceInput(meta?.device ?? undefined);
+  if (incoming) {
+    const next = applyDeviceSnapshot(
+      { firstDevice: user.firstDevice, lastDevice: user.lastDevice },
+      incoming,
+      isNewUser || !user.firstDevice,
+    );
+    user.set('firstDevice', next.firstDevice);
+    user.set('lastDevice', next.lastDevice);
+  }
+  const fcm = String(meta?.fcmToken ?? '').trim();
+  if (fcm) user.set('fcmToken', fcm.slice(0, 4096));
+}
+
+function deviceFieldsForCreate(meta: AuthClientMeta | undefined): Record<string, unknown> {
+  const incoming = normalizeDeviceInput(meta?.device ?? undefined);
+  const extra: Record<string, unknown> = {};
+  if (incoming) {
+    const next = applyDeviceSnapshot({}, incoming, true);
+    extra.firstDevice = next.firstDevice;
+    extra.lastDevice = next.lastDevice;
+  }
+  const fcm = String(meta?.fcmToken ?? '').trim();
+  if (fcm) extra.fcmToken = fcm.slice(0, 4096);
+  return extra;
 }
 
 async function uniqueUsername(base: string): Promise<string> {
@@ -183,7 +231,7 @@ export async function requestSignupOtp(env: Env, payload: SignupRequestPayload):
   await sendOtpEmail(env, email, code);
 }
 
-export async function verifyOtp(env: Env, email: string, code: string): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
+export async function verifyOtp(env: Env, email: string, code: string, meta?: AuthClientMeta): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const normalized = email.toLowerCase().trim();
   const challenge = await OtpChallengeModel.findOne({ email: normalized }).sort({ createdAt: -1 });
   if (!challenge) {
@@ -216,9 +264,11 @@ export async function verifyOtp(env: Env, email: string, code: string): Promise<
       emailVerified: true,
       authProvider: 'otp',
       settings: defaultUserSettings(),
+      ...deviceFieldsForCreate(meta),
     });
   } else {
     user.emailVerified = true;
+    stampAuthClient(user, meta, false);
     await user.save();
   }
 
@@ -234,6 +284,7 @@ export async function verifyLoginOtp(
   env: Env,
   identifier: string,
   code: string,
+  meta?: AuthClientMeta,
 ): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const user = await findUserByIdentifier(identifier);
   if (!user) {
@@ -265,6 +316,7 @@ export async function verifyLoginOtp(
   }
 
   user.emailVerified = true;
+  stampAuthClient(user, meta, false);
   await user.save();
   await OtpChallengeModel.deleteMany({ email: normalized });
 
@@ -277,6 +329,7 @@ export async function loginWithPassword(
   env: Env,
   identifier: string,
   password: string,
+  meta?: AuthClientMeta,
 ): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const user = await findUserByIdentifier(identifier);
   if (!user) {
@@ -295,8 +348,9 @@ export async function loginWithPassword(
 
   if (!user.emailVerified) {
     user.emailVerified = true;
-    await user.save();
   }
+  stampAuthClient(user, meta, false);
+  await user.save();
 
   const accessToken = signAccessToken(env, String(user._id));
   const refreshToken = signRefreshToken(env, String(user._id), user.tokenVersion);
@@ -307,6 +361,7 @@ export async function verifySignupOtp(
   env: Env,
   email: string,
   code: string,
+  meta?: AuthClientMeta,
 ): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const normalized = email.toLowerCase().trim();
   const challenge = await OtpChallengeModel.findOne({ email: normalized }).sort({ createdAt: -1 });
@@ -351,6 +406,7 @@ export async function verifySignupOtp(
     passwordHash: challenge.signupPasswordHash,
     settings: defaultUserSettings(),
     ...(challenge.signupAge != null ? { age: challenge.signupAge } : {}),
+    ...deviceFieldsForCreate(meta),
   });
 
   await OtpChallengeModel.deleteMany({ email: normalized });
@@ -361,7 +417,11 @@ export async function verifySignupOtp(
   return { accessToken, refreshToken, user: user.toJSON() };
 }
 
-export async function loginWithGoogle(env: Env, idToken: string): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
+export async function loginWithGoogle(
+  env: Env,
+  idToken: string,
+  meta?: AuthClientMeta,
+): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
   const google = await verifyGoogleIdToken(env, idToken);
   if (!google.email) {
     throw new Error('Google account has no email');
@@ -377,6 +437,7 @@ export async function loginWithGoogle(env: Env, idToken: string): Promise<{ acce
       if (google.picture && !user.avatarUrl) user.avatarUrl = google.picture;
       const firstName = firstNameFromGoogleName(google.name);
       if (firstName && user.displayName === user.username) user.displayName = firstName;
+      stampAuthClient(user, meta, false);
       await user.save();
     } else {
       const base = emailLocalPart(google.email);
@@ -403,8 +464,12 @@ export async function loginWithGoogle(env: Env, idToken: string): Promise<{ acce
         authProvider: 'google',
         passwordHash: '',
         settings: defaultUserSettings(),
+        ...deviceFieldsForCreate(meta),
       });
     }
+  } else {
+    stampAuthClient(user, meta, false);
+    await user.save();
   }
 
   const accessToken = signAccessToken(env, String(user!._id));

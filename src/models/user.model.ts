@@ -39,6 +39,19 @@ const devicePermissionsSchema = new Schema(
   { _id: false },
 );
 
+const deviceSnapshotSchema = new Schema(
+  {
+    platform: { type: String, default: '' },
+    model: { type: String, default: '' },
+    os: { type: String, default: '' },
+    appVersion: { type: String, default: '' },
+    appBuild: { type: String, default: '' },
+    deviceId: { type: String, default: '' },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
@@ -64,6 +77,12 @@ const userSchema = new Schema(
     tokenVersion: { type: Number, default: 0 },
     settings: { type: userSettingsSchema, default: () => ({}) },
     devicePermissions: { type: devicePermissionsSchema, default: () => ({}) },
+    /** Write-once signup phone / app. */
+    firstDevice: { type: deviceSnapshotSchema },
+    /** Latest login phone / app. */
+    lastDevice: { type: deviceSnapshotSchema },
+    /** FCM token for later push; optional until Firebase is wired. */
+    fcmToken: { type: String, default: '' },
   },
   { timestamps: true },
 );
@@ -72,6 +91,9 @@ userSchema.set('toJSON', {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   transform: (_doc: unknown, ret: Record<string, any>) => {
     delete ret.passwordHash;
+    delete ret.fcmToken;
+    delete ret.firstDevice;
+    delete ret.lastDevice;
     return ret;
   },
 });
