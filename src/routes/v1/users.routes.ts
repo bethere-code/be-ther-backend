@@ -13,6 +13,7 @@ import { USER_REPORT_REASONS, UserReportModel } from '../../models/user-report.m
 import { deleteFollowEdge, followPair, isBlockedEitherWay, isFollowing, setBlock, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
+import { USERNAME_CHANGE_REGEX, usernameChangeLocked } from '../../utils/username-change.js';
 
 /** Fields populated on calendar/feed authors. Badge paused — not included. */
 const AUTHOR_SELECT = 'username displayName avatarUrl';
@@ -220,6 +221,9 @@ async function enrichUserForViewer(
     isBlocked,
     isMutualFollow: canDM,
     canDM,
+    usernameChangedAt: isOwnProfile && user.usernameChangedAt
+      ? new Date(user.usernameChangedAt as Date | string).toISOString()
+      : null,
     eventsCount: clampCount(eventsCount),
     followersCount: clampCount(followersCount),
     followingCount: clampCount(followingCount),
@@ -369,6 +373,96 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         })
         .filter(Boolean);
       return reply.send({ ok: true, data: { items } });
+    },
+  );
+
+  app.get(
+    '/api/v1/users/me/username/available',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const raw = String((req.query as { q?: string }).q ?? '')
+        .trim()
+        .toLowerCase();
+      if (!USERNAME_CHANGE_REGEX.test(raw)) {
+        return reply.send({
+          ok: true,
+          data: {
+            available: false,
+            reason: 'Use 3–20 lowercase letters and digits',
+          },
+        });
+      }
+      const me = await UserModel.findById(req.userId).select('username').lean();
+      if (!me) {
+        return reply.status(401).send({ ok: false, error: { message: 'Invalid token user' } });
+      }
+      if (me.username === raw) {
+        return reply.send({ ok: true, data: { available: true, own: true } });
+      }
+      const taken = await UserModel.exists({ username: raw });
+      return reply.send({
+        ok: true,
+        data: taken
+          ? { available: false, reason: 'Username already exists' }
+          : { available: true },
+      });
+    },
+  );
+
+  app.patch(
+    '/api/v1/users/me/username',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const parsed = z
+        .object({ username: z.string().trim().toLowerCase() })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const next = parsed.data.username;
+      if (!USERNAME_CHANGE_REGEX.test(next)) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: 'Use 3–20 lowercase letters and digits' },
+        });
+      }
+      const user = await UserModel.findById(req.userId);
+      if (!user) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      if (user.username === next) {
+        const data = await enrichUserForViewer(user.toObject() as Record<string, unknown>, req.userId);
+        return reply.send({ ok: true, data });
+      }
+      if (usernameChangeLocked(user.usernameChangedAt)) {
+        return reply.status(403).send({
+          ok: false,
+          error: { message: 'You cannot edit your username for 7 days after the last change' },
+        });
+      }
+      const taken = await UserModel.exists({ username: next });
+      if (taken) {
+        return reply.status(409).send({
+          ok: false,
+          error: { message: 'Username already exists' },
+        });
+      }
+      user.username = next;
+      user.usernameChangedAt = new Date();
+      try {
+        await user.save();
+      } catch (err: unknown) {
+        const code = (err as { code?: number })?.code;
+        if (code === 11000) {
+          return reply.status(409).send({
+            ok: false,
+            error: { message: 'Username already exists' },
+          });
+        }
+        throw err;
+      }
+      const data = await enrichUserForViewer(user.toObject() as Record<string, unknown>, req.userId);
+      return reply.send({ ok: true, data });
     },
   );
 

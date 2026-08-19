@@ -83,6 +83,8 @@ const userSchema = new Schema(
     lastDevice: { type: deviceSnapshotSchema },
     /** FCM token for later push; optional until Firebase is wired. */
     fcmToken: { type: String, default: '' },
+    /** Set when the user changes username. Missing = never changed (edit allowed). */
+    usernameChangedAt: { type: Date },
   },
   { timestamps: true },
 );
