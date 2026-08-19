@@ -8,6 +8,7 @@ import { areMutualFollowers } from '../../services/follow.service.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { compareExplorePosts, isPostEventPast } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
+import { canViewerSeePost, postsVisibleToViewerFilter } from '../../utils/post-visibility.js';
 
 const EXPLORE_SCAN_LIMIT = 400;
 const EXPLORE_PAGE_SIZE = 50;
@@ -23,9 +24,7 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       const limit = EXPLORE_PAGE_SIZE;
 
       // Same window as before (400 newest visible posts), one round-trip.
-      const scanned = await PostModel.find({
-        $or: [{ isPrivate: false }, { authorId: req.userId }],
-      })
+      const scanned = await PostModel.find(await postsVisibleToViewerFilter(req.userId!))
         .sort({ createdAt: -1, _id: -1 })
         .limit(EXPLORE_SCAN_LIMIT)
         .lean();
@@ -60,6 +59,10 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       const post = await PostModel.findById(postId).lean();
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      if (!(await canViewerSeePost(post, userId))) {
+        return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
       }
 
       const existing = await BookmarkModel.findOne({ postId, userId });

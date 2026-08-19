@@ -2,6 +2,7 @@ import { Types } from 'mongoose';
 
 import type { Env } from '../config/env.js';
 import { PostModel } from '../models/post.model.js';
+import { UserModel } from '../models/user.model.js';
 
 type SharePost = {
   _id: Types.ObjectId;
@@ -53,10 +54,14 @@ export async function loadPublicPostForShare(postId: string): Promise<SharePost 
   if (!Types.ObjectId.isValid(postId)) return null;
 
   const post = await PostModel.findOne({ _id: postId, isPrivate: false })
-    .select('location caption imageUrl eventDetails')
+    .select('location caption imageUrl eventDetails authorId')
     .lean();
 
   if (!post) return null;
+  const author = await UserModel.findById(post.authorId)
+    .select('settings.isPrivateProfile')
+    .lean();
+  if (author?.settings?.isPrivateProfile) return null;
   return post as SharePost;
 }
 

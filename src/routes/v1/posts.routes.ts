@@ -16,6 +16,7 @@ import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } fr
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
+import { canViewerSeePost, postsVisibleToViewerFilter } from '../../utils/post-visibility.js';
 import { searchPosts } from '../../services/search.service.js';
 
 const COMMENT_AUTHOR_SELECT = 'username displayName avatarUrl';
@@ -45,14 +46,8 @@ async function assertCanViewPost(
   post: { authorId: unknown; isPrivate?: boolean },
   viewerId: string,
 ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
-  if (!post.isPrivate || String(post.authorId) === viewerId) {
-    return { ok: true };
-  }
-  const mutual = await areMutualFollowers(viewerId, String(post.authorId));
-  if (!mutual) {
-    return { ok: false, status: 403, message: 'Event is private' };
-  }
-  return { ok: true };
+  if (await canViewerSeePost(post, viewerId)) return { ok: true };
+  return { ok: false, status: 403, message: 'This event is not visible to you' };
 }
 
 const captionSchema = z
@@ -110,9 +105,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const skip = Math.max(0, Number(q.skip ?? 0) || 0);
       const limit = 10;
 
-      const posts = await PostModel.find({
-        $or: [{ isPrivate: false }, { authorId: req.userId }],
-      })
+      const posts = await PostModel.find(await postsVisibleToViewerFilter(req.userId!))
         .sort({ createdAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit + 1)
@@ -163,7 +156,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
 
       const post = await PostModel.findOne({
         _id: postId,
-        $or: [{ isPrivate: false }, { authorId: userId }],
+        ...(await postsVisibleToViewerFilter(userId)),
       })
         .populate('authorId', 'username displayName avatarUrl')
         .lean();
@@ -259,6 +252,11 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
       }
 
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
       const existing = await LikeModel.findOne({ postId, userId });
       if (existing) {
         await existing.deleteOne();
@@ -286,6 +284,12 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
       }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+      }
+
       const existing = await BookmarkModel.findOne({ postId, userId });
       if (existing) {
         await existing.deleteOne();
@@ -335,8 +339,8 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
       }
 
-      if (post.isPrivate && String(post.authorId) !== userId) {
-        return reply.status(403).send({ ok: false, error: { message: 'Cannot add private event to calendar' } });
+      if (!(await canViewerSeePost(post, userId))) {
+        return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
       }
 
       const isAuthor = String(post.authorId) === userId;
@@ -462,11 +466,8 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         });
       }
 
-      if (post.isPrivate) {
-        const mutual = await areMutualFollowers(userId, String(post.authorId));
-        if (!mutual) {
-          return reply.status(403).send({ ok: false, error: { message: 'Event is private' } });
-        }
+      if (!(await canViewerSeePost(post, userId))) {
+        return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
       }
 
       try {
@@ -522,11 +523,8 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
       }
 
-      if (post.isPrivate && String(post.authorId) !== userId) {
-        const mutual = await areMutualFollowers(userId, String(post.authorId));
-        if (!mutual) {
-          return reply.status(403).send({ ok: false, error: { message: 'Event is private' } });
-        }
+      if (!(await canViewerSeePost(post, userId))) {
+        return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
       }
 
       const [total, rows, graph] = await Promise.all([

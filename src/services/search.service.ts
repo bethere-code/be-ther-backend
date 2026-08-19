@@ -5,6 +5,7 @@ import { UserModel } from '../models/user.model.js';
 import { enrichPostsForViewer } from '../utils/enrich-posts.js';
 import { isPostEventPast, parseEventDateToIso } from '../utils/event-date.js';
 import { mapPostToExploreItem } from '../utils/map-post-to-explore.js';
+import { postsVisibleToViewerFilter } from '../utils/post-visibility.js';
 
 const MONTH_NAMES = [
   'january',
@@ -468,9 +469,7 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
     return { items: [], nextSkip: null };
   }
 
-  const visibility = {
-    $or: [{ isPrivate: false }, { authorId: new Types.ObjectId(params.viewerId) }],
-  };
+  const visibility = await postsVisibleToViewerFilter(params.viewerId);
 
   const fullIso = parseSearchDateQuery(query);
   const monthOnlyQuery = fullIso ? null : parseSearchMonthQuery(query);

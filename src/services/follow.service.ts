@@ -52,13 +52,13 @@ export async function areMutualFollowers(a: string, b: string): Promise<boolean>
   return aFollowsB && bFollowsA;
 }
 
-/** Private calendar/lists stay hidden until the viewer and profile follow each other. */
+/** Private calendar/lists stay hidden until the viewer follows the profile. */
 export function privateProfileHidesContent(
   isOwnProfile: boolean,
   isPrivateProfile: boolean,
-  mutualFollow: boolean,
+  viewerFollows: boolean,
 ): boolean {
-  return !isOwnProfile && isPrivateProfile && !mutualFollow;
+  return !isOwnProfile && isPrivateProfile && !viewerFollows;
 }
 
 /**

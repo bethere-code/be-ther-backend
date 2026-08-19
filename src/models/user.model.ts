@@ -87,6 +87,8 @@ const userSchema = new Schema(
   { timestamps: true },
 );
 
+userSchema.index({ 'settings.isPrivateProfile': 1 });
+
 userSchema.set('toJSON', {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   transform: (_doc: unknown, ret: Record<string, any>) => {

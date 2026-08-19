@@ -8,7 +8,7 @@ import { FollowModel } from '../../models/follow.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../../models/user.model.js';
-import { areMutualFollowers, followPair, toggleFollow } from '../../services/follow.service.js';
+import { followPair, isFollowing, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
@@ -380,8 +380,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       const isOwnProfile = String(user._id) === viewerId;
 
       if (user.settings?.isPrivateProfile && !isOwnProfile) {
-        const mutual = await areMutualFollowers(viewerId, String(user._id));
-        if (!mutual) {
+        const follows = await isFollowing(viewerId, String(user._id));
+        if (!follows) {
           return reply.send({ ok: true, data: { items: [], private: true } });
         }
       }
@@ -510,8 +510,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     if (!user) return { error: 'not_found' as const };
     const isOwn = String(user._id) === viewerId;
     if (user.settings?.isPrivateProfile && !isOwn) {
-      const mutual = await areMutualFollowers(viewerId, String(user._id));
-      if (!mutual) return { error: 'private' as const };
+      const follows = await isFollowing(viewerId, String(user._id));
+      if (!follows) return { error: 'private' as const };
     }
     return { user, isOwn };
   }
