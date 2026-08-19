@@ -23,13 +23,22 @@ export async function isFollowing(followerId: string, followingId: string): Prom
   );
 }
 
-/** Both users follow each other (used for DM unlock + notification copy). */
+/** Both users follow each other (DM unlock, private calendar, notification copy). */
 export async function areMutualFollowers(a: string, b: string): Promise<boolean> {
   const [aFollowsB, bFollowsA] = await Promise.all([
     isFollowing(a, b),
     isFollowing(b, a),
   ]);
   return aFollowsB && bFollowsA;
+}
+
+/** Private calendar/lists stay hidden until the viewer and profile follow each other. */
+export function privateProfileHidesContent(
+  isOwnProfile: boolean,
+  isPrivateProfile: boolean,
+  mutualFollow: boolean,
+): boolean {
+  return !isOwnProfile && isPrivateProfile && !mutualFollow;
 }
 
 /**

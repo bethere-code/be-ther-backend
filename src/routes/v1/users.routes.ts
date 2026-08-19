@@ -206,6 +206,7 @@ async function enrichUserForViewer(
     },
     isOwnProfile,
     isFollowing: viewerFollows,
+    isMutualFollow: canDM,
     canDM,
     eventsCount: clampCount(eventsCount),
     followersCount: clampCount(followersCount),
@@ -331,15 +332,6 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     if (!user) {
       return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
     }
-    if (user.settings?.isPrivateProfile && String(user._id) !== req.userId) {
-      const follows = await isFollowing(req.userId!, String(user._id));
-      if (!follows) {
-        // Still return the public card so the app can render a lock + Follow.
-        // Calendar / events / connections stay 403 until they follow.
-        const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
-        return reply.send({ ok: true, data });
-      }
-    }
     const data = await enrichUserForViewer(user as Record<string, unknown>, req.userId);
     return reply.send({ ok: true, data });
   });
@@ -387,9 +379,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       const isOwnProfile = String(user._id) === viewerId;
 
       if (user.settings?.isPrivateProfile && !isOwnProfile) {
-        const follows = await isFollowing(viewerId, String(user._id));
-        if (!follows) {
-          return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        const mutual = await areMutualFollowers(viewerId, String(user._id));
+        if (!mutual) {
+          return reply.send({ ok: true, data: { items: [], private: true } });
         }
       }
 
@@ -507,8 +499,8 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     if (!user) return { error: 'not_found' as const };
     const isOwn = String(user._id) === viewerId;
     if (user.settings?.isPrivateProfile && !isOwn) {
-      const follows = await isFollowing(viewerId, String(user._id));
-      if (!follows) return { error: 'private' as const };
+      const mutual = await areMutualFollowers(viewerId, String(user._id));
+      if (!mutual) return { error: 'private' as const };
     }
     return { user, isOwn };
   }
@@ -542,7 +534,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (loaded.error === 'not_found') {
           return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
         }
-        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
       const posts = await PostModel.find({ authorId: loaded.user._id })
@@ -567,7 +559,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (loaded.error === 'not_found') {
           return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
         }
-        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
       const edges = await FollowModel.find({ followingId: loaded.user._id })
@@ -595,7 +587,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (loaded.error === 'not_found') {
           return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
         }
-        return reply.status(403).send({ ok: false, error: { message: 'Private profile' } });
+        return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
       const edges = await FollowModel.find({ followerId: loaded.user._id })
