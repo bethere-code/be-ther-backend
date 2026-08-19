@@ -3,12 +3,14 @@ import { Types } from 'mongoose';
 import { z } from 'zod';
 
 import { BookmarkModel } from '../../models/bookmark.model.js';
+import { BlockModel } from '../../models/block.model.js';
 import { CalendarModel } from '../../models/calendar.model.js';
 import { FollowModel } from '../../models/follow.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../../models/user.model.js';
-import { followPair, isFollowing, toggleFollow } from '../../services/follow.service.js';
+import { USER_REPORT_REASONS, UserReportModel } from '../../models/user-report.model.js';
+import { deleteFollowEdge, followPair, isBlockedEitherWay, isFollowing, setBlock, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 
@@ -159,12 +161,21 @@ async function enrichUserForViewer(
   const userId = String(user._id);
   const isOwnProfile = viewerId != null && userId === viewerId;
   let viewerFollows = false;
+  let theyFollowMe = false;
   let canDM = false;
+  let isBlocked = false;
 
   if (!isOwnProfile && viewerId) {
     const pair = await followPair(viewerId, userId);
     viewerFollows = pair.aFollowsB;
+    theyFollowMe = pair.bFollowsA;
     canDM = pair.aFollowsB && pair.bFollowsA;
+    isBlocked = Boolean(
+      await BlockModel.exists({
+        blockerId: new Types.ObjectId(viewerId),
+        blockedId: new Types.ObjectId(userId),
+      }),
+    );
   }
 
   // Prefer denormalized counters (O(1)). Fall back only if fields are missing on old docs.
@@ -205,6 +216,8 @@ async function enrichUserForViewer(
     },
     isOwnProfile,
     isFollowing: viewerFollows,
+    isFollowedBy: theyFollowMe,
+    isBlocked,
     isMutualFollow: canDM,
     canDM,
     eventsCount: clampCount(eventsCount),
@@ -361,8 +374,109 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         if (err instanceof Error && err.message === 'CANNOT_FOLLOW_SELF') {
           return reply.status(400).send({ ok: false, error: { message: 'Cannot follow yourself' } });
         }
+        if (err instanceof Error && err.message === 'BLOCKED') {
+          return reply.status(403).send({ ok: false, error: { message: 'You cannot follow this account' } });
+        }
         throw err;
       }
+    },
+  );
+
+  app.post(
+    '/api/v1/users/:username/remove-follower',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const target = await UserModel.findOne({ username }).select('_id').lean();
+      if (!target) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      const me = req.userId!;
+      const them = String(target._id);
+      if (me === them) {
+        return reply.status(400).send({ ok: false, error: { message: 'Cannot remove yourself' } });
+      }
+      const removed = await deleteFollowEdge(them, me);
+      if (!removed) {
+        return reply.status(400).send({ ok: false, error: { message: 'This person is not following you' } });
+      }
+      return reply.send({ ok: true, data: { removed: true } });
+    },
+  );
+
+  app.post(
+    '/api/v1/users/:username/block',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const parsed = z.object({ blocked: z.boolean() }).safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const target = await UserModel.findOne({ username }).select('_id').lean();
+      if (!target) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      try {
+        const result = await setBlock(req.userId!, String(target._id), parsed.data.blocked);
+        return reply.send({ ok: true, data: result });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === 'CANNOT_BLOCK_SELF') {
+          return reply.status(400).send({ ok: false, error: { message: 'Cannot block yourself' } });
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.post(
+    '/api/v1/users/:username/reports',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const parsed = z
+        .object({
+          reason: z.enum(USER_REPORT_REASONS),
+          details: z.string().trim().max(500).optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const details = parsed.data.details ?? '';
+      if (parsed.data.reason === 'other' && details.length < 3) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: 'Please describe the issue (at least 3 characters)' },
+        });
+      }
+      const target = await UserModel.findOne({ username }).select('_id').lean();
+      if (!target) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      const reporterId = req.userId!;
+      const reportedUserId = String(target._id);
+      if (reporterId === reportedUserId) {
+        return reply.status(400).send({ ok: false, error: { message: 'Cannot report yourself' } });
+      }
+      try {
+        await UserReportModel.create({
+          reporterId,
+          reportedUserId,
+          reason: parsed.data.reason,
+          details,
+        });
+      } catch (err: unknown) {
+        const code = (err as { code?: number })?.code;
+        if (code === 11000) {
+          return reply.status(409).send({
+            ok: false,
+            error: { message: 'You already reported this account' },
+          });
+        }
+        throw err;
+      }
+      return reply.send({ ok: true, data: { reported: true } });
     },
   );
 
@@ -378,6 +492,10 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
 
       const viewerId = req.userId!;
       const isOwnProfile = String(user._id) === viewerId;
+
+      if (!isOwnProfile && (await isBlockedEitherWay(viewerId, String(user._id)))) {
+        return reply.send({ ok: true, data: { items: [], private: true } });
+      }
 
       if (user.settings?.isPrivateProfile && !isOwnProfile) {
         const follows = await isFollowing(viewerId, String(user._id));
@@ -509,6 +627,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
     const user = await UserModel.findOne({ username }).select('_id settings').lean();
     if (!user) return { error: 'not_found' as const };
     const isOwn = String(user._id) === viewerId;
+    if (!isOwn && (await isBlockedEitherWay(viewerId, String(user._id)))) {
+      return { error: 'private' as const };
+    }
     if (user.settings?.isPrivateProfile && !isOwn) {
       const follows = await isFollowing(viewerId, String(user._id));
       if (!follows) return { error: 'private' as const };

@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 
+import { BlockModel } from '../models/block.model.js';
 import { FollowModel } from '../models/follow.model.js';
 import { NotificationModel } from '../models/notification.model.js';
 import { UserModel } from '../models/user.model.js';
@@ -121,6 +122,46 @@ function clampCount(n: number | undefined): number {
   return Math.max(0, Number(n ?? 0));
 }
 
+export async function isBlockedEitherWay(a: string, b: string): Promise<boolean> {
+  if (!Types.ObjectId.isValid(a) || !Types.ObjectId.isValid(b) || a === b) return false;
+  const aId = asObjectId(a);
+  const bId = asObjectId(b);
+  const row = await BlockModel.exists({
+    $or: [
+      { blockerId: aId, blockedId: bId },
+      { blockerId: bId, blockedId: aId },
+    ],
+  });
+  return Boolean(row);
+}
+
+/** Drops one follow edge and keeps denormalized counters in range. */
+export async function deleteFollowEdge(followerId: string, followingId: string): Promise<boolean> {
+  const followerObjectId = asObjectId(followerId);
+  const followingObjectId = asObjectId(followingId);
+  const existing = await FollowModel.findOne({
+    followerId: followerObjectId,
+    followingId: followingObjectId,
+  });
+  if (!existing) return false;
+  await existing.deleteOne();
+  await Promise.all([
+    UserModel.updateOne({ _id: followingObjectId }, { $inc: { followersCount: -1 } }),
+    UserModel.updateOne({ _id: followerObjectId }, { $inc: { followingCount: -1 } }),
+  ]);
+  await Promise.all([
+    UserModel.updateOne(
+      { _id: followingObjectId, followersCount: { $lt: 0 } },
+      { $set: { followersCount: 0 } },
+    ),
+    UserModel.updateOne(
+      { _id: followerObjectId, followingCount: { $lt: 0 } },
+      { $set: { followingCount: 0 } },
+    ),
+  ]);
+  return true;
+}
+
 /**
  * Toggle follow. Updates denormalized counters on both users (O(1) profile reads).
  * Returns whether `followerId` now follows `followingId`, plus the target's follower count.
@@ -142,24 +183,13 @@ export async function toggleFollow(
   });
 
   if (existing) {
-    await existing.deleteOne();
-    await Promise.all([
-      UserModel.updateOne({ _id: followingObjectId }, { $inc: { followersCount: -1 } }),
-      UserModel.updateOne({ _id: followerObjectId }, { $inc: { followingCount: -1 } }),
-    ]);
-    // Floor at 0 if counters ever drifted.
-    await Promise.all([
-      UserModel.updateOne(
-        { _id: followingObjectId, followersCount: { $lt: 0 } },
-        { $set: { followersCount: 0 } },
-      ),
-      UserModel.updateOne(
-        { _id: followerObjectId, followingCount: { $lt: 0 } },
-        { $set: { followingCount: 0 } },
-      ),
-    ]);
+    await deleteFollowEdge(followerId, followingId);
     const target = await UserModel.findById(followingObjectId).select('followersCount').lean();
     return { following: false, followersCount: clampCount(target?.followersCount) };
+  }
+
+  if (await isBlockedEitherWay(followerId, followingId)) {
+    throw new Error('BLOCKED');
   }
 
   try {
@@ -190,4 +220,35 @@ export async function toggleFollow(
 
   const target = await UserModel.findById(followingObjectId).select('followersCount').lean();
   return { following: true, followersCount: clampCount(target?.followersCount) };
+}
+
+export async function setBlock(
+  blockerId: string,
+  blockedId: string,
+  blocked: boolean,
+): Promise<{ blocked: boolean; followersCount: number }> {
+  if (blockerId === blockedId) throw new Error('CANNOT_BLOCK_SELF');
+  const blocker = asObjectId(blockerId);
+  const other = asObjectId(blockedId);
+
+  if (!blocked) {
+    await BlockModel.deleteOne({ blockerId: blocker, blockedId: other });
+    const target = await UserModel.findById(other).select('followersCount').lean();
+    return { blocked: false, followersCount: clampCount(target?.followersCount) };
+  }
+
+  try {
+    await BlockModel.create({ blockerId: blocker, blockedId: other });
+  } catch (err: unknown) {
+    const code = (err as { code?: number })?.code;
+    if (code !== 11000) throw err;
+  }
+
+  await Promise.all([
+    deleteFollowEdge(blockerId, blockedId),
+    deleteFollowEdge(blockedId, blockerId),
+  ]);
+
+  const target = await UserModel.findById(other).select('followersCount').lean();
+  return { blocked: true, followersCount: clampCount(target?.followersCount) };
 }

@@ -18,6 +18,8 @@ import './models/explore-event.model.js';
 import './models/explore-bookmark.model.js';
 import './models/profile-calendar-hidden.model.js';
 import './models/post-report.model.js';
+import './models/user-report.model.js';
+import './models/block.model.js';
 import './models/post-view.model.js';
 import './models/analytics-event.model.js';
 

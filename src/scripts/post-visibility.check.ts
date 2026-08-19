@@ -15,4 +15,7 @@ assert.ok(!JSON.stringify(shown).includes('$nin'));
 const ownOnly = postsListFilterFromSets(me, [followed], [priv]);
 assert.ok(JSON.stringify(ownOnly).includes('$nin'));
 
+const stillHidden = postsListFilterFromSets(me, [priv], [], [priv]);
+assert.ok(JSON.stringify(stillHidden).includes('$nin'));
+
 console.log('post-visibility.check.ts ok');

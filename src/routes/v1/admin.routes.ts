@@ -13,6 +13,7 @@ import { LikeModel } from '../../models/like.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { PostReportModel } from '../../models/post-report.model.js';
 import { UserModel } from '../../models/user.model.js';
+import { UserReportModel } from '../../models/user-report.model.js';
 import { parseAdminLogins } from '../../utils/admin-logins.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -106,6 +107,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         commentsInRange,
         likesInRange,
         reportsInRange,
+        userReportsInRange,
         screenAgg,
         authAgg,
       ] = await Promise.all([
@@ -117,6 +119,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         CommentModel.countDocuments(created),
         LikeModel.countDocuments(created),
         PostReportModel.countDocuments(created),
+        UserReportModel.countDocuments(created),
         AnalyticsEventModel.aggregate<{ durationMs: number; count: number }>([
           { $match: { ...occurred, type: 'screen_time' } },
           { $group: { _id: null, durationMs: { $sum: '$durationMs' }, count: { $sum: 1 } } },
@@ -139,7 +142,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           followsInRange,
           commentsInRange,
           likesInRange,
-          reportsInRange,
+          reportsInRange: reportsInRange + userReportsInRange,
           screenTimeMs: screenAgg[0]?.durationMs ?? 0,
           screenEvents: screenAgg[0]?.count ?? 0,
           auth: Object.fromEntries(authAgg.map((a) => [a._id || 'unknown', a.count])),
@@ -317,6 +320,43 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           .populate('postId', 'caption location imageUrl')
           .lean(),
         PostReportModel.countDocuments(filter),
+      ]);
+      return reply.send({
+        ok: true,
+        data: {
+          items,
+          total,
+          page,
+          limit,
+          from: range ? range.from.toISOString() : null,
+          to: range ? range.to.toISOString() : null,
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/user-reports',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const q = req.query as { from?: string; to?: string; dir?: string; page?: string; limit?: string };
+      const range = optionalCreatedRange(q);
+      if (range && 'error' in range) {
+        return reply.status(400).send({ ok: false, error: { message: range.error } });
+      }
+      const { page, limit, skip } = pageLimit(q);
+      const filter: Record<string, unknown> = {};
+      if (range) filter.createdAt = { $gte: range.from, $lte: range.to };
+      const dir = q.dir === 'asc' ? 1 : -1;
+      const [items, total] = await Promise.all([
+        UserReportModel.find(filter)
+          .sort({ createdAt: dir })
+          .skip(skip)
+          .limit(limit)
+          .populate('reporterId', 'username email')
+          .populate('reportedUserId', 'username email displayName')
+          .lean(),
+        UserReportModel.countDocuments(filter),
       ]);
       return reply.send({
         ok: true,
