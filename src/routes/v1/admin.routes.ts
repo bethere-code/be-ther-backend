@@ -235,8 +235,9 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       }
       const { page, limit, skip } = pageLimit(q);
       const filter: Record<string, unknown> = {};
-      if (range) filter.createdAt = { $gte: range.from, $lte: range.to };
       const search = (q.q ?? '').trim().slice(0, 80);
+      // Search is global — join-date range only when not searching.
+      if (range && search.length < 2) filter.createdAt = { $gte: range.from, $lte: range.to };
       if (search.length >= 2) {
         const rx = new RegExp(escapeRegex(search), 'i');
         filter.$or = [{ username: rx }, { email: rx }, { displayName: rx }];
@@ -285,14 +286,10 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       if (!raw) {
         return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
       }
-      const oid = new Types.ObjectId(id);
-      const [enriched, posts] = await Promise.all([
-        enrichAdminUsers([raw as LeanUser]),
-        PostModel.find({ authorId: oid }).sort({ createdAt: -1 }).limit(20).lean(),
-      ]);
+      const [enriched] = await enrichAdminUsers([raw as LeanUser]);
       return reply.send({
         ok: true,
-        data: { user: enriched[0], posts },
+        data: { user: enriched },
       });
     },
   );
@@ -308,7 +305,9 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         sort?: string;
         page?: string;
         limit?: string;
+        authorId?: string;
       };
+      const authorOk = Boolean(q.authorId && Types.ObjectId.isValid(q.authorId));
       const range = optionalCreatedRange(q);
       if (range && 'error' in range) {
         return reply.status(400).send({ ok: false, error: { message: range.error } });
@@ -316,6 +315,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       const { page, limit, skip } = pageLimit(q);
       const filter: Record<string, unknown> = {};
       if (range) filter.createdAt = { $gte: range.from, $lte: range.to };
+      if (authorOk) filter.authorId = new Types.ObjectId(q.authorId!);
       const sortKey = q.sort === 'likesCount' ? 'likesCount' : 'createdAt';
       const dir = q.dir === 'asc' ? 1 : -1;
       const [items, total] = await Promise.all([
@@ -480,6 +480,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         to?: string;
         type?: string;
         userId?: string;
+        sort?: string;
         dir?: string;
         page?: string;
         limit?: string;
@@ -490,15 +491,19 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       if (range && 'error' in range) {
         return reply.status(400).send({ ok: false, error: { message: range.error } });
       }
-      const { page, limit, skip } = pageLimit(q);
+      // Analytics UI groups events into sessions client-side; allow a larger page.
+      const page = Math.max(1, Number.parseInt(q.page ?? '1', 10) || 1);
+      const limit = Math.min(500, Math.max(1, Number.parseInt(q.limit ?? '25', 10) || 25));
+      const skip = (page - 1) * limit;
       const filter: Record<string, unknown> = {};
       if (range) filter.occurredAt = { $gte: range.from, $lte: range.to };
       if (q.type === 'screen_time' || q.type === 'auth') filter.type = q.type;
       if (userIdOk) filter.userId = new Types.ObjectId(q.userId!);
+      const sortKey = q.sort === 'durationMs' ? 'durationMs' : 'occurredAt';
       const dir = q.dir === 'asc' ? 1 : -1;
       const [items, total] = await Promise.all([
         AnalyticsEventModel.find(filter)
-          .sort({ occurredAt: dir })
+          .sort({ [sortKey]: dir })
           .skip(skip)
           .limit(limit)
           .populate('userId', 'username displayName avatarUrl')
