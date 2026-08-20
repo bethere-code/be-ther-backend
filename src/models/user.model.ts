@@ -74,7 +74,7 @@ const userSchema = new Schema(
     authProvider: { type: String, enum: ['otp', 'password', 'google'], default: 'otp', index: true },
     /** bcrypt hash; absent for OAuth-only accounts */
     passwordHash: { type: String, default: '' },
-    age: { type: Number, min: 1, max: 120 },
+    age: { type: Number, min: 10, max: 125 },
     /** Denormalized follow graph counts — updated on follow/unfollow (O(1) profile reads). */
     followersCount: { type: Number, default: 0, min: 0 },
     followingCount: { type: Number, default: 0, min: 0 },

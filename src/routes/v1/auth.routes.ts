@@ -78,7 +78,7 @@ const signupRequestOtpSchema = z.object({
     .regex(/^[a-z0-9]+$/, 'Username: lowercase letters and digits only, no spaces'),
   email: z.string().email(),
   password: signupPasswordSchema,
-  age: z.coerce.number().int().min(1).max(120).optional().nullable(),
+  age: z.coerce.number().int().min(10).max(125).optional().nullable(),
 });
 
 const signupVerifySchema = z.object({

@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 
 import { BlockModel } from '../models/block.model.js';
-import { FollowModel } from '../models/follow.model.js';
+import { FollowModel, acceptedOnly } from '../models/follow.model.js';
 import { UserModel } from '../models/user.model.js';
 import { isBlockedEitherWay } from '../services/follow.service.js';
 
@@ -42,7 +42,7 @@ export async function postsVisibleToViewerFilter(
 ): Promise<Record<string, unknown>> {
   const viewer = new Types.ObjectId(viewerId);
   const [following, privateAuthors, blocks] = await Promise.all([
-    FollowModel.find({ followerId: viewer }).select('followingId').lean(),
+    FollowModel.find(acceptedOnly({ followerId: viewer })).select('followingId').lean(),
     UserModel.find({ 'settings.isPrivateProfile': true }).select('_id').lean(),
     BlockModel.find({
       $or: [{ blockerId: viewer }, { blockedId: viewer }],
@@ -72,9 +72,11 @@ export async function canViewerSeePost(
   if (post.isPrivate) return false;
   const author = await UserModel.findById(authorId).select('settings.isPrivateProfile').lean();
   if (!author?.settings?.isPrivateProfile) return true;
-  const follows = await FollowModel.exists({
-    followerId: new Types.ObjectId(viewerId),
-    followingId: new Types.ObjectId(authorId),
-  });
+  const follows = await FollowModel.exists(
+    acceptedOnly({
+      followerId: new Types.ObjectId(viewerId),
+      followingId: new Types.ObjectId(authorId),
+    }),
+  );
   return Boolean(follows);
 }

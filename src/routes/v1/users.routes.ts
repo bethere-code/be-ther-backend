@@ -5,12 +5,12 @@ import { z } from 'zod';
 import { BookmarkModel } from '../../models/bookmark.model.js';
 import { BlockModel } from '../../models/block.model.js';
 import { CalendarModel } from '../../models/calendar.model.js';
-import { FollowModel } from '../../models/follow.model.js';
+import { FollowModel, acceptedOnly } from '../../models/follow.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { USER_REPORT_REASONS, UserReportModel } from '../../models/user-report.model.js';
-import { deleteFollowEdge, followPair, isBlockedEitherWay, isFollowing, setBlock, toggleFollow } from '../../services/follow.service.js';
+import { deleteFollowEdge, followPair, hasPendingFollowRequest, isBlockedEitherWay, isFollowing, respondFollowRequest, setBlock, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { USERNAME_CHANGE_REGEX, usernameChangeLocked } from '../../utils/username-change.js';
@@ -179,6 +179,11 @@ async function enrichUserForViewer(
     );
   }
 
+  const followRequestPending =
+    !isOwnProfile && viewerId && !viewerFollows
+      ? await hasPendingFollowRequest(viewerId, userId)
+      : false;
+
   // Prefer denormalized counters (O(1)). Fall back only if fields are missing on old docs.
   let eventsCount = user.eventsCount;
   let followersCount = user.followersCount;
@@ -187,10 +192,10 @@ async function enrichUserForViewer(
     const [events, followers, following] = await Promise.all([
       eventsCount == null ? PostModel.countDocuments({ authorId: userId }) : Promise.resolve(null),
       followersCount == null
-        ? FollowModel.countDocuments({ followingId: userId })
+        ? FollowModel.countDocuments(acceptedOnly({ followingId: userId }))
         : Promise.resolve(null),
       followingCount == null
-        ? FollowModel.countDocuments({ followerId: userId })
+        ? FollowModel.countDocuments(acceptedOnly({ followerId: userId }))
         : Promise.resolve(null),
     ]);
     if (events != null) eventsCount = events;
@@ -217,6 +222,7 @@ async function enrichUserForViewer(
     },
     isOwnProfile,
     isFollowing: viewerFollows,
+    followRequestPending,
     isFollowedBy: theyFollowMe,
     isBlocked,
     isMutualFollow: canDM,
@@ -493,6 +499,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
           ok: true,
           data: {
             following: result.following,
+            requested: result.requested,
             followersCount: result.followersCount,
           },
         });
@@ -502,6 +509,51 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         }
         if (err instanceof Error && err.message === 'BLOCKED') {
           return reply.status(403).send({ ok: false, error: { message: 'You cannot follow this account' } });
+        }
+        if (err instanceof Error && err.message === 'USER_NOT_FOUND') {
+          return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.post(
+    '/api/v1/users/:username/follow-request',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const username = String((req.params as { username: string }).username).toLowerCase();
+      const parsed = z
+        .object({ action: z.enum(['accept', 'reject']) })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: { message: 'action must be accept or reject' } });
+      }
+      const requester = await UserModel.findOne({ username }).select('_id').lean();
+      if (!requester) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      try {
+        const result = await respondFollowRequest(
+          req.userId!,
+          String(requester._id),
+          parsed.data.action,
+        );
+        return reply.send({
+          ok: true,
+          data: {
+            accepted: result.accepted,
+            followersCount: result.followersCount,
+          },
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.message === 'NO_PENDING_REQUEST') {
+          return reply
+            .status(400)
+            .send({ ok: false, error: { message: 'No pending follow request from this user' } });
+        }
+        if (err instanceof Error && err.message === 'CANNOT_FOLLOW_SELF') {
+          return reply.status(400).send({ ok: false, error: { message: 'Invalid request' } });
         }
         throw err;
       }
@@ -828,7 +880,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
-      const edges = await FollowModel.find({ followingId: loaded.user._id })
+      const edges = await FollowModel.find(
+        acceptedOnly({ followingId: loaded.user._id }),
+      )
         .sort({ createdAt: -1 })
         .limit(200)
         .populate('followerId', 'username displayName avatarUrl')
@@ -856,7 +910,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         return reply.send({ ok: true, data: { items: [], private: true } });
       }
 
-      const edges = await FollowModel.find({ followerId: loaded.user._id })
+      const edges = await FollowModel.find(
+        acceptedOnly({ followerId: loaded.user._id }),
+      )
         .sort({ createdAt: -1 })
         .limit(200)
         .populate('followingId', 'username displayName avatarUrl')

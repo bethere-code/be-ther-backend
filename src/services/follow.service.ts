@@ -1,7 +1,7 @@
 import { Types } from 'mongoose';
 
 import { BlockModel } from '../models/block.model.js';
-import { FollowModel } from '../models/follow.model.js';
+import { FollowModel, acceptedOnly } from '../models/follow.model.js';
 import { NotificationModel } from '../models/notification.model.js';
 import { UserModel } from '../models/user.model.js';
 
@@ -12,12 +12,32 @@ function asObjectId(id: string): Types.ObjectId {
   return new Types.ObjectId(id);
 }
 
+function isAcceptedStatus(status: unknown): boolean {
+  return status !== 'pending';
+}
+
 export async function isFollowing(followerId: string, followingId: string): Promise<boolean> {
   const pair = await followPair(followerId, followingId);
   return pair.aFollowsB;
 }
 
-/** One query for both follow directions between two users. */
+/** Viewer has a pending request to follow target (not yet accepted). */
+export async function hasPendingFollowRequest(
+  followerId: string,
+  followingId: string,
+): Promise<boolean> {
+  if (!Types.ObjectId.isValid(followerId) || !Types.ObjectId.isValid(followingId)) {
+    return false;
+  }
+  const row = await FollowModel.exists({
+    followerId: asObjectId(followerId),
+    followingId: asObjectId(followingId),
+    status: 'pending',
+  });
+  return Boolean(row);
+}
+
+/** One query for both follow directions between two users (accepted only). */
 export async function followPair(
   a: string,
   b: string,
@@ -33,12 +53,13 @@ export async function followPair(
       { followerId: bId, followingId: aId },
     ],
   })
-    .select('followerId followingId')
+    .select('followerId followingId status')
     .lean();
 
   let aFollowsB = false;
   let bFollowsA = false;
   for (const row of rows) {
+    if (!isAcceptedStatus(row.status)) continue;
     const from = String(row.followerId);
     const to = String(row.followingId);
     if (from === a && to === b) aFollowsB = true;
@@ -75,8 +96,8 @@ export async function loadViewerFollowGraph(viewerId: string): Promise<{
   }
   const viewerOid = asObjectId(viewerId);
   const [outbound, inbound] = await Promise.all([
-    FollowModel.find({ followerId: viewerOid }).select('followingId').lean(),
-    FollowModel.find({ followingId: viewerOid }).select('followerId').lean(),
+    FollowModel.find(acceptedOnly({ followerId: viewerOid })).select('followingId').lean(),
+    FollowModel.find(acceptedOnly({ followingId: viewerOid })).select('followerId').lean(),
   ]);
   return {
     iFollow: new Set(outbound.map((e) => String(e.followingId))),
@@ -135,7 +156,18 @@ export async function isBlockedEitherWay(a: string, b: string): Promise<boolean>
   return Boolean(row);
 }
 
-/** Drops one follow edge and keeps denormalized counters in range. */
+async function clearFollowRequestNotifications(
+  privateUserId: Types.ObjectId,
+  actorUserId: Types.ObjectId,
+): Promise<void> {
+  await NotificationModel.deleteMany({
+    userId: privateUserId,
+    actorUserId,
+    type: 'follow_request',
+  });
+}
+
+/** Drops one follow edge. Counters only move for accepted edges. */
 export async function deleteFollowEdge(followerId: string, followingId: string): Promise<boolean> {
   const followerObjectId = asObjectId(followerId);
   const followingObjectId = asObjectId(followingId);
@@ -144,7 +176,11 @@ export async function deleteFollowEdge(followerId: string, followingId: string):
     followingId: followingObjectId,
   });
   if (!existing) return false;
+  const wasAccepted = isAcceptedStatus(existing.status);
   await existing.deleteOne();
+  await clearFollowRequestNotifications(followingObjectId, followerObjectId);
+  if (!wasAccepted) return true;
+
   await Promise.all([
     UserModel.updateOne({ _id: followingObjectId }, { $inc: { followersCount: -1 } }),
     UserModel.updateOne({ _id: followerObjectId }, { $inc: { followingCount: -1 } }),
@@ -162,14 +198,19 @@ export async function deleteFollowEdge(followerId: string, followingId: string):
   return true;
 }
 
+export type ToggleFollowResult = {
+  following: boolean;
+  requested: boolean;
+  followersCount: number;
+};
+
 /**
- * Toggle follow. Updates denormalized counters on both users (O(1) profile reads).
- * Returns whether `followerId` now follows `followingId`, plus the target's follower count.
+ * Toggle follow / request. Private targets get a pending request (no counters).
  */
 export async function toggleFollow(
   followerId: string,
   followingId: string,
-): Promise<{ following: boolean; followersCount: number }> {
+): Promise<ToggleFollowResult> {
   if (followerId === followingId) {
     throw new Error('CANNOT_FOLLOW_SELF');
   }
@@ -185,24 +226,69 @@ export async function toggleFollow(
   if (existing) {
     await deleteFollowEdge(followerId, followingId);
     const target = await UserModel.findById(followingObjectId).select('followersCount').lean();
-    return { following: false, followersCount: clampCount(target?.followersCount) };
+    return {
+      following: false,
+      requested: false,
+      followersCount: clampCount(target?.followersCount),
+    };
   }
 
   if (await isBlockedEitherWay(followerId, followingId)) {
     throw new Error('BLOCKED');
   }
 
+  const targetUser = await UserModel.findById(followingObjectId)
+    .select('followersCount settings.isPrivateProfile')
+    .lean();
+  if (!targetUser) {
+    throw new Error('USER_NOT_FOUND');
+  }
+
+  const isPrivate = Boolean(
+    targetUser.settings &&
+      typeof targetUser.settings === 'object' &&
+      (targetUser.settings as { isPrivateProfile?: boolean }).isPrivateProfile,
+  );
+
+  if (isPrivate) {
+    try {
+      await FollowModel.create({
+        followerId: followerObjectId,
+        followingId: followingObjectId,
+        status: 'pending',
+      });
+    } catch (err: unknown) {
+      const code = (err as { code?: number })?.code;
+      if (code !== 11000) throw err;
+    }
+    await NotificationModel.create({
+      userId: followingObjectId,
+      type: 'follow_request',
+      actorUserId: followerObjectId,
+      mutualFollow: false,
+    });
+    return {
+      following: false,
+      requested: true,
+      followersCount: clampCount(targetUser.followersCount),
+    };
+  }
+
   try {
     await FollowModel.create({
       followerId: followerObjectId,
       followingId: followingObjectId,
+      status: 'accepted',
     });
   } catch (err: unknown) {
-    // Race: another request created the same edge — treat as already following.
     const code = (err as { code?: number })?.code;
     if (code !== 11000) throw err;
     const target = await UserModel.findById(followingObjectId).select('followersCount').lean();
-    return { following: true, followersCount: clampCount(target?.followersCount) };
+    return {
+      following: true,
+      requested: false,
+      followersCount: clampCount(target?.followersCount),
+    };
   }
 
   await Promise.all([
@@ -219,7 +305,57 @@ export async function toggleFollow(
   });
 
   const target = await UserModel.findById(followingObjectId).select('followersCount').lean();
-  return { following: true, followersCount: clampCount(target?.followersCount) };
+  return {
+    following: true,
+    requested: false,
+    followersCount: clampCount(target?.followersCount),
+  };
+}
+
+/**
+ * Private account owner accepts or rejects a pending follow request.
+ * `privateUserId` must be the followingId (the private account).
+ */
+export async function respondFollowRequest(
+  privateUserId: string,
+  requesterId: string,
+  action: 'accept' | 'reject',
+): Promise<{ accepted: boolean; followersCount: number }> {
+  if (privateUserId === requesterId) {
+    throw new Error('CANNOT_FOLLOW_SELF');
+  }
+
+  const privateOid = asObjectId(privateUserId);
+  const requesterOid = asObjectId(requesterId);
+
+  const edge = await FollowModel.findOne({
+    followerId: requesterOid,
+    followingId: privateOid,
+    status: 'pending',
+  });
+  if (!edge) {
+    throw new Error('NO_PENDING_REQUEST');
+  }
+
+  if (action === 'reject') {
+    await edge.deleteOne();
+    await clearFollowRequestNotifications(privateOid, requesterOid);
+    const target = await UserModel.findById(privateOid).select('followersCount').lean();
+    return { accepted: false, followersCount: clampCount(target?.followersCount) };
+  }
+
+  edge.status = 'accepted';
+  await edge.save();
+
+  await Promise.all([
+    UserModel.updateOne({ _id: privateOid }, { $inc: { followersCount: 1 } }),
+    UserModel.updateOne({ _id: requesterOid }, { $inc: { followingCount: 1 } }),
+  ]);
+
+  await clearFollowRequestNotifications(privateOid, requesterOid);
+
+  const target = await UserModel.findById(privateOid).select('followersCount').lean();
+  return { accepted: true, followersCount: clampCount(target?.followersCount) };
 }
 
 export async function setBlock(
