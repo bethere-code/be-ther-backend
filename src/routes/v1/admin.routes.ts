@@ -286,14 +286,13 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
       }
       const oid = new Types.ObjectId(id);
-      const [enriched, posts, events] = await Promise.all([
+      const [enriched, posts] = await Promise.all([
         enrichAdminUsers([raw as LeanUser]),
         PostModel.find({ authorId: oid }).sort({ createdAt: -1 }).limit(20).lean(),
-        AnalyticsEventModel.find({ userId: oid }).sort({ occurredAt: -1 }).limit(50).lean(),
       ]);
       return reply.send({
         ok: true,
-        data: { user: enriched[0], posts, events },
+        data: { user: enriched[0], posts },
       });
     },
   );
@@ -485,26 +484,37 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         page?: string;
         limit?: string;
       };
-      const range = rangeFromQuery(q);
-      if ('error' in range) {
+      const userIdOk = Boolean(q.userId && Types.ObjectId.isValid(q.userId));
+      // Per-user activity: date range optional. Global analytics: last-7-days default required.
+      const range = userIdOk ? optionalCreatedRange(q) : rangeFromQuery(q);
+      if (range && 'error' in range) {
         return reply.status(400).send({ ok: false, error: { message: range.error } });
       }
       const { page, limit, skip } = pageLimit(q);
-      const filter: Record<string, unknown> = {
-        occurredAt: { $gte: range.from, $lte: range.to },
-      };
+      const filter: Record<string, unknown> = {};
+      if (range) filter.occurredAt = { $gte: range.from, $lte: range.to };
       if (q.type === 'screen_time' || q.type === 'auth') filter.type = q.type;
-      if (q.userId && Types.ObjectId.isValid(q.userId)) {
-        filter.userId = new Types.ObjectId(q.userId);
-      }
+      if (userIdOk) filter.userId = new Types.ObjectId(q.userId!);
       const dir = q.dir === 'asc' ? 1 : -1;
       const [items, total] = await Promise.all([
-        AnalyticsEventModel.find(filter).sort({ occurredAt: dir }).skip(skip).limit(limit).lean(),
+        AnalyticsEventModel.find(filter)
+          .sort({ occurredAt: dir })
+          .skip(skip)
+          .limit(limit)
+          .populate('userId', 'username displayName avatarUrl')
+          .lean(),
         AnalyticsEventModel.countDocuments(filter),
       ]);
       return reply.send({
         ok: true,
-        data: { items, total, page, limit, from: range.from.toISOString(), to: range.to.toISOString() },
+        data: {
+          items,
+          total,
+          page,
+          limit,
+          from: range ? range.from.toISOString() : null,
+          to: range ? range.to.toISOString() : null,
+        },
       });
     },
   );
