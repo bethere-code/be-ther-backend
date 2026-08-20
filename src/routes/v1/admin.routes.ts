@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { Env } from '../../config/env.js';
 import { signAdminToken } from '../../lib/jwt.js';
 import { AnalyticsEventModel } from '../../models/analytics-event.model.js';
+import { CalendarModel } from '../../models/calendar.model.js';
 import { CommentModel } from '../../models/comment.model.js';
 import { FollowModel } from '../../models/follow.model.js';
 import { LikeModel } from '../../models/like.model.js';
@@ -15,6 +16,7 @@ import { PostReportModel } from '../../models/post-report.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { UserReportModel } from '../../models/user-report.model.js';
 import { parseAdminLogins } from '../../utils/admin-logins.js';
+import { buildEventShareUrl } from '../../utils/share-metadata.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 const USER_SELECT =
@@ -177,7 +179,10 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         filter.$or = [{ username: rx }, { email: rx }, { displayName: rx }];
       }
       const sortKey =
-        q.sort === 'followersCount' || q.sort === 'eventsCount' || q.sort === 'lastDevice.at'
+        q.sort === 'followersCount' ||
+        q.sort === 'followingCount' ||
+        q.sort === 'eventsCount' ||
+        q.sort === 'lastDevice.at'
           ? q.sort
           : 'createdAt';
       const dir = q.dir === 'asc' ? 1 : -1;
@@ -229,7 +234,14 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
     '/api/v1/admin/posts',
     { preHandler: [app.authenticateAdmin] },
     async (req, reply) => {
-      const q = req.query as { from?: string; to?: string; dir?: string; page?: string; limit?: string };
+      const q = req.query as {
+        from?: string;
+        to?: string;
+        dir?: string;
+        sort?: string;
+        page?: string;
+        limit?: string;
+      };
       const range = optionalCreatedRange(q);
       if (range && 'error' in range) {
         return reply.status(400).send({ ok: false, error: { message: range.error } });
@@ -237,13 +249,14 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       const { page, limit, skip } = pageLimit(q);
       const filter: Record<string, unknown> = {};
       if (range) filter.createdAt = { $gte: range.from, $lte: range.to };
+      const sortKey = q.sort === 'likesCount' ? 'likesCount' : 'createdAt';
       const dir = q.dir === 'asc' ? 1 : -1;
       const [items, total] = await Promise.all([
         PostModel.find(filter)
-          .sort({ createdAt: dir })
+          .sort({ [sortKey]: dir })
           .skip(skip)
           .limit(limit)
-          .populate('authorId', 'username displayName email')
+          .populate('authorId', 'username displayName avatarUrl')
           .lean(),
         PostModel.countDocuments(filter),
       ]);
@@ -258,6 +271,136 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           to: range ? range.to.toISOString() : null,
         },
       });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/posts/:id',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const id = String((req.params as { id: string }).id);
+      if (!Types.ObjectId.isValid(id)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid id' } });
+      }
+      const oid = new Types.ObjectId(id);
+      const post = await PostModel.findById(oid)
+        .populate('authorId', 'username displayName avatarUrl email')
+        .lean();
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+      const [likesCount, interestedCount, goingOnly, legacyGoing] = await Promise.all([
+        LikeModel.countDocuments({ postId: oid }),
+        CalendarModel.countDocuments({ postId: oid, status: 'interested' }),
+        CalendarModel.countDocuments({ postId: oid, status: 'going' }),
+        CalendarModel.countDocuments({
+          postId: oid,
+          status: { $nin: ['interested', 'going'] },
+        }),
+      ]);
+      return reply.send({
+        ok: true,
+        data: {
+          post,
+          likesCount,
+          interestedCount,
+          goingCount: goingOnly + legacyGoing,
+          shareUrl: buildEventShareUrl(env, id),
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/posts/:id/people',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const id = String((req.params as { id: string }).id);
+      const kind = String((req.query as { kind?: string }).kind ?? '');
+      if (!Types.ObjectId.isValid(id)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid id' } });
+      }
+      if (kind !== 'likes' && kind !== 'interested' && kind !== 'going') {
+        return reply.status(400).send({ ok: false, error: { message: 'kind must be likes, interested, or going' } });
+      }
+      const oid = new Types.ObjectId(id);
+      const exists = await PostModel.exists({ _id: oid });
+      if (!exists) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      type Person = {
+        _id: string;
+        username: string;
+        displayName: string;
+        avatarUrl: string;
+        at: string | null;
+      };
+
+      const mapUser = (
+        raw: { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string } | null | undefined,
+        at: Date | undefined,
+      ): Person | null => {
+        if (!raw?._id) return null;
+        const username = String(raw.username ?? '').trim();
+        if (!username) return null;
+        return {
+          _id: String(raw._id),
+          username,
+          displayName: String(raw.displayName ?? '').trim() || username,
+          avatarUrl: String(raw.avatarUrl ?? ''),
+          at: at ? at.toISOString() : null,
+        };
+      };
+
+      if (kind === 'likes') {
+        const rows = await LikeModel.find({ postId: oid })
+          .sort({ createdAt: -1 })
+          .limit(200)
+          .populate('userId', 'username displayName avatarUrl')
+          .lean();
+        const items = rows
+          .map((row) =>
+            mapUser(
+              row.userId as {
+                _id?: Types.ObjectId;
+                username?: string;
+                displayName?: string;
+                avatarUrl?: string;
+              },
+              row.createdAt,
+            ),
+          )
+          .filter(Boolean);
+        return reply.send({ ok: true, data: { kind, items } });
+      }
+
+      const calFilter: Record<string, unknown> =
+        kind === 'interested'
+          ? { postId: oid, status: 'interested' }
+          : {
+              postId: oid,
+              $or: [{ status: 'going' }, { status: { $exists: false } }, { status: null }],
+            };
+      const rows = await CalendarModel.find(calFilter)
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .populate('userId', 'username displayName avatarUrl')
+        .lean();
+      const items = rows
+        .map((row) =>
+          mapUser(
+            row.userId as {
+              _id?: Types.ObjectId;
+              username?: string;
+              displayName?: string;
+              avatarUrl?: string;
+            },
+            row.createdAt,
+          ),
+        )
+        .filter(Boolean);
+      return reply.send({ ok: true, data: { kind, items } });
     },
   );
 
