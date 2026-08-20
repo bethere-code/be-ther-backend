@@ -59,6 +59,69 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+type LeanUser = {
+  _id: Types.ObjectId;
+  eventsCount?: number;
+  followersCount?: number;
+  followingCount?: number;
+  lastDevice?: { model?: string; platform?: string; at?: Date | string } | null;
+  firstDevice?: { model?: string; platform?: string; at?: Date | string } | null;
+  [key: string]: unknown;
+};
+
+/** Live counts + last-active — denormalized fields on old docs are often stale zeros. */
+async function enrichAdminUsers(users: LeanUser[]): Promise<LeanUser[]> {
+  if (users.length === 0) return users;
+  const ids = users.map((u) => u._id);
+  const [postAgg, followerAgg, followingAgg, activeAgg] = await Promise.all([
+    PostModel.aggregate<{ _id: Types.ObjectId; n: number }>([
+      { $match: { authorId: { $in: ids } } },
+      { $group: { _id: '$authorId', n: { $sum: 1 } } },
+    ]),
+    FollowModel.aggregate<{ _id: Types.ObjectId; n: number }>([
+      { $match: { followingId: { $in: ids } } },
+      { $group: { _id: '$followingId', n: { $sum: 1 } } },
+    ]),
+    FollowModel.aggregate<{ _id: Types.ObjectId; n: number }>([
+      { $match: { followerId: { $in: ids } } },
+      { $group: { _id: '$followerId', n: { $sum: 1 } } },
+    ]),
+    AnalyticsEventModel.aggregate<{ _id: Types.ObjectId; at: Date }>([
+      { $match: { userId: { $in: ids } } },
+      { $group: { _id: '$userId', at: { $max: '$occurredAt' } } },
+    ]),
+  ]);
+  const posts = new Map(postAgg.map((r) => [String(r._id), r.n]));
+  const followers = new Map(followerAgg.map((r) => [String(r._id), r.n]));
+  const following = new Map(followingAgg.map((r) => [String(r._id), r.n]));
+  const lastActive = new Map(activeAgg.map((r) => [String(r._id), r.at]));
+
+  return users.map((u) => {
+    const id = String(u._id);
+    const device = u.lastDevice && typeof u.lastDevice === 'object' ? { ...u.lastDevice } : null;
+    const activeAt = lastActive.get(id);
+    if (device && !device.at && activeAt) device.at = activeAt;
+    if (!device && activeAt) {
+      return {
+        ...u,
+        eventsCount: posts.get(id) ?? 0,
+        followersCount: followers.get(id) ?? 0,
+        followingCount: following.get(id) ?? 0,
+        lastDevice: { model: '', platform: '', at: activeAt },
+        lastActiveAt: activeAt,
+      };
+    }
+    return {
+      ...u,
+      eventsCount: posts.get(id) ?? 0,
+      followersCount: followers.get(id) ?? 0,
+      followingCount: following.get(id) ?? 0,
+      lastDevice: device,
+      lastActiveAt: device?.at ?? activeAt ?? null,
+    };
+  });
+}
+
 export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Promise<void> {
   const logins = parseAdminLogins(env.ADMIN_LOGINS);
 
@@ -186,7 +249,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           ? q.sort
           : 'createdAt';
       const dir = q.dir === 'asc' ? 1 : -1;
-      const [items, total] = await Promise.all([
+      const [rawItems, total] = await Promise.all([
         UserModel.find(filter)
           .select(USER_SELECT)
           .sort({ [sortKey]: dir })
@@ -195,6 +258,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           .lean(),
         UserModel.countDocuments(filter),
       ]);
+      const items = await enrichAdminUsers(rawItems as LeanUser[]);
       return reply.send({
         ok: true,
         data: {
@@ -217,16 +281,20 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       if (!Types.ObjectId.isValid(id)) {
         return reply.status(400).send({ ok: false, error: { message: 'Invalid id' } });
       }
-      const user = await UserModel.findById(id).select('-passwordHash').lean();
-      if (!user) {
+      const raw = await UserModel.findById(id).select('-passwordHash').lean();
+      if (!raw) {
         return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
       }
       const oid = new Types.ObjectId(id);
-      const [posts, events] = await Promise.all([
+      const [enriched, posts, events] = await Promise.all([
+        enrichAdminUsers([raw as LeanUser]),
         PostModel.find({ authorId: oid }).sort({ createdAt: -1 }).limit(20).lean(),
         AnalyticsEventModel.find({ userId: oid }).sort({ occurredAt: -1 }).limit(50).lean(),
       ]);
-      return reply.send({ ok: true, data: { user, posts, events } });
+      return reply.send({
+        ok: true,
+        data: { user: enriched[0], posts, events },
+      });
     },
   );
 
