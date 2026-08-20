@@ -16,6 +16,13 @@ import { PostReportModel } from '../../models/post-report.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { UserReportModel } from '../../models/user-report.model.js';
 import { parseAdminLogins } from '../../utils/admin-logins.js';
+import {
+  groupAnalyticsSessions,
+  MAX_SESSION_SCAN,
+  sortSessions,
+  type LeanEvent,
+  type SessionUser,
+} from '../../utils/analytics-sessions.js';
 import { buildEventShareUrl } from '../../utils/share-metadata.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
@@ -491,10 +498,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       if (range && 'error' in range) {
         return reply.status(400).send({ ok: false, error: { message: range.error } });
       }
-      // Analytics UI groups events into sessions client-side; allow a larger page.
-      const page = Math.max(1, Number.parseInt(q.page ?? '1', 10) || 1);
-      const limit = Math.min(500, Math.max(1, Number.parseInt(q.limit ?? '25', 10) || 25));
-      const skip = (page - 1) * limit;
+      const { page, limit, skip } = pageLimit(q);
       const filter: Record<string, unknown> = {};
       if (range) filter.occurredAt = { $gte: range.from, $lte: range.to };
       if (q.type === 'screen_time' || q.type === 'auth') filter.type = q.type;
@@ -519,6 +523,86 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           limit,
           from: range ? range.from.toISOString() : null,
           to: range ? range.to.toISOString() : null,
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/analytics/sessions',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const q = req.query as {
+        from?: string;
+        to?: string;
+        type?: string;
+        sort?: string;
+        dir?: string;
+        page?: string;
+        limit?: string;
+      };
+      const range = rangeFromQuery(q);
+      if ('error' in range) {
+        return reply.status(400).send({ ok: false, error: { message: range.error } });
+      }
+      const { page, limit, skip } = pageLimit(q);
+      const filter: Record<string, unknown> = {
+        occurredAt: { $gte: range.from, $lte: range.to },
+      };
+      if (q.type === 'screen_time' || q.type === 'auth') filter.type = q.type;
+
+      const [raw, eventTotal] = await Promise.all([
+        AnalyticsEventModel.find(filter)
+          .sort({ userId: 1, occurredAt: 1 })
+          .limit(MAX_SESSION_SCAN)
+          .select('userId type action screen path occurredAt enteredAt exitedAt durationMs')
+          .lean(),
+        AnalyticsEventModel.countDocuments(filter),
+      ]);
+
+      const userIds = [
+        ...new Set(
+          raw
+            .map((e) => String(e.userId ?? ''))
+            .filter((id) => Types.ObjectId.isValid(id)),
+        ),
+      ].map((id) => new Types.ObjectId(id));
+
+      const users = await UserModel.find({ _id: { $in: userIds } })
+        .select('username displayName')
+        .lean();
+      const usersById = new Map<string, SessionUser>(
+        users.map((u) => [
+          String(u._id),
+          {
+            id: String(u._id),
+            name: String(u.displayName || u.username || 'Unknown'),
+            username: String(u.username || ''),
+          },
+        ]),
+      );
+
+      const sortKey = q.sort === 'durationMs' ? 'durationMs' : 'occurredAt';
+      const dir = q.dir === 'asc' ? 'asc' : 'desc';
+      const allSessions = sortSessions(
+        groupAnalyticsSessions(raw as LeanEvent[], usersById),
+        sortKey,
+        dir,
+      );
+      const items = allSessions.slice(skip, skip + limit);
+
+      return reply.send({
+        ok: true,
+        data: {
+          items,
+          total: allSessions.length,
+          page,
+          limit,
+          scannedEvents: raw.length,
+          eventTotal,
+          truncated: eventTotal > raw.length,
+          from: range.from.toISOString(),
+          to: range.to.toISOString(),
         },
       });
     },
