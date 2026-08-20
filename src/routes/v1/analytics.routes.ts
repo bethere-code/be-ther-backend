@@ -4,10 +4,22 @@ import { z } from 'zod';
 
 import { AnalyticsEventModel } from '../../models/analytics-event.model.js';
 import { UserModel } from '../../models/user.model.js';
+import { applyDeviceSnapshot, normalizeDeviceInput } from '../../utils/device-snapshot.js';
 
 const MAX_BATCH = 50;
 const MAX_DURATION_MS = 30 * 60 * 1000;
 const SKIP_SCREENS = new Set(['splash']);
+
+const deviceSchema = z
+  .object({
+    platform: z.string().trim().max(32).optional(),
+    model: z.string().trim().max(80).optional(),
+    os: z.string().trim().max(40).optional(),
+    appVersion: z.string().trim().max(32).optional(),
+    appBuild: z.string().trim().max(16).optional(),
+    deviceId: z.string().trim().max(128).optional(),
+  })
+  .optional();
 
 const screenEventSchema = z.object({
   eventId: z.string().trim().min(8).max(80),
@@ -25,6 +37,7 @@ const authEventSchema = z.object({
   type: z.literal('auth'),
   action: z.enum(['signup', 'login', 'logout']),
   at: z.string().datetime(),
+  device: deviceSchema,
 });
 
 const batchSchema = z.object({
@@ -59,6 +72,8 @@ export async function registerAnalyticsV1Routes(app: FastifyInstance): Promise<v
       const acknowledgedEventIds: string[] = [];
       const duplicateEventIds: string[] = [];
       const docs: Array<Record<string, unknown>> = [];
+      let latestAuthDevice: { action: string; at: Date; device: NonNullable<ReturnType<typeof normalizeDeviceInput>> } | null =
+        null;
 
       for (const raw of parsed.data.events) {
         const screen = screenEventSchema.safeParse(raw);
@@ -88,13 +103,18 @@ export async function registerAnalyticsV1Routes(app: FastifyInstance): Promise<v
         if (auth.success) {
           const at = parseIso(auth.data.at);
           if (!at) continue;
+          const device = normalizeDeviceInput(auth.data.device ?? null);
           docs.push({
             eventId: auth.data.eventId,
             userId,
             type: 'auth',
             occurredAt: at,
             action: auth.data.action,
+            ...(device ? { device } : {}),
           });
+          if (device && (!latestAuthDevice || at.getTime() >= latestAuthDevice.at.getTime())) {
+            latestAuthDevice = { action: auth.data.action, at, device };
+          }
         }
       }
 
@@ -119,7 +139,22 @@ export async function registerAnalyticsV1Routes(app: FastifyInstance): Promise<v
         }
       }
 
-      if (parsed.data.app) {
+      // Keep lastDevice fresh on login/signup/logout analytics (logout otherwise never updates it).
+      if (latestAuthDevice) {
+        const user = await UserModel.findById(userId).select('firstDevice lastDevice').lean();
+        if (user) {
+          const next = applyDeviceSnapshot(
+            { firstDevice: user.firstDevice, lastDevice: user.lastDevice },
+            latestAuthDevice.device,
+            false,
+            latestAuthDevice.at,
+          );
+          await UserModel.updateOne(
+            { _id: new Types.ObjectId(userId) },
+            { $set: { firstDevice: next.firstDevice, lastDevice: next.lastDevice } },
+          );
+        }
+      } else if (parsed.data.app) {
         const now = new Date();
         await UserModel.updateOne(
           { _id: new Types.ObjectId(userId), lastDevice: { $exists: true } },

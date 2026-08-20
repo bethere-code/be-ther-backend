@@ -13,6 +13,20 @@ const analyticsEventSchema = new Schema(
     durationMs: { type: Number, min: 0 },
     exitReason: { type: String, default: '' },
     action: { type: String, enum: ['signup', 'login', 'logout', ''] },
+    /** Present on auth events — which phone/app did login/signup/logout. */
+    device: {
+      type: new Schema(
+        {
+          platform: { type: String, default: '' },
+          model: { type: String, default: '' },
+          os: { type: String, default: '' },
+          appVersion: { type: String, default: '' },
+          appBuild: { type: String, default: '' },
+          deviceId: { type: String, default: '' },
+        },
+        { _id: false },
+      ),
+    },
   },
   { timestamps: false },
 );

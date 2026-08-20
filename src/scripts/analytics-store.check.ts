@@ -17,7 +17,8 @@ assert.match(routes, /MAX_BATCH = 50/);
 assert.match(routes, /\$facet/);
 assert.match(routes, /insertMany\(docs, \{ ordered: false \}\)/);
 assert.match(routes, /'lastDevice\.appVersion'/);
-assert.doesNotMatch(routes, /findById\(userId\)\.select\('lastDevice'\)/);
+assert.match(routes, /device: deviceSchema/);
+assert.match(routes, /applyDeviceSnapshot/);
 assert.match(routes, /Range too large/);
 assert.match(routes, /firstDevice: user\?\.firstDevice/);
 
