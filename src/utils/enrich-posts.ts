@@ -19,20 +19,31 @@ type LeanPost = Record<string, unknown> & {
 };
 
 function enrichAuthor(
-  authorRaw: PopulatedAuthor | Types.ObjectId | undefined,
+  authorRaw: PopulatedAuthor | Types.ObjectId | string | undefined,
 ): PopulatedAuthor & { badge: null } {
-  if (!authorRaw || authorRaw instanceof Types.ObjectId) {
+  // Lean + JSON paths: populated authors are plain objects with username.
+  // Raw ObjectIds / id strings must not be spread (they have no username).
+  if (
+    authorRaw &&
+    typeof authorRaw === 'object' &&
+    !(authorRaw instanceof Types.ObjectId) &&
+    'username' in authorRaw
+  ) {
     return {
-      username: '',
-      displayName: '',
-      avatarUrl: '',
-      // badge: paused
+      ...authorRaw,
+      // badge: paused — restore with multi-signal computeMemberBadge later
       badge: null,
     };
   }
+  const id =
+    authorRaw instanceof Types.ObjectId || typeof authorRaw === 'string'
+      ? String(authorRaw)
+      : '';
   return {
-    ...authorRaw,
-    // badge: paused — restore with multi-signal computeMemberBadge later
+    ...(id ? { _id: id as unknown as Types.ObjectId } : {}),
+    username: '',
+    displayName: '',
+    avatarUrl: '',
     badge: null,
   };
 }

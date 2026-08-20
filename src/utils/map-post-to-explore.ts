@@ -20,6 +20,23 @@ function trimStr(value: unknown): string {
   return String(value ?? '').trim();
 }
 
+/** Stable author payload for explore / search clients (never a raw ObjectId). */
+export function mapExploreAuthor(authorId: unknown): Record<string, unknown> | null {
+  if (authorId && typeof authorId === 'object' && authorId !== null && 'username' in authorId) {
+    const a = authorId as Record<string, unknown>;
+    const username = trimStr(a.username);
+    if (!username) return null;
+    return {
+      _id: String(a._id ?? a.id ?? ''),
+      username,
+      displayName: trimStr(a.displayName) || username,
+      avatarUrl: trimStr(a.avatarUrl),
+      badge: a.badge ?? null,
+    };
+  }
+  return null;
+}
+
 /**
  * Places `formattedAddress` only — no venue/country stitching.
  */
@@ -51,6 +68,7 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
   const country = trimStr(eventLocation?.country) || trimStr(post.country);
   const venue = trimStr(eventDetails?.venue) || trimStr(eventLocation?.name);
   const address = resolvePostEventAddress(post);
+  const author = mapExploreAuthor(post.authorId ?? post.author);
 
   return {
     _id: String(post._id),
@@ -93,7 +111,8 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     calendarCount: Math.max(0, Number(post.calendarCount ?? 0) || 0),
     likesCount: Math.max(0, likesCount || 0),
     commentsCount: Math.max(0, Number(post.commentsCount ?? 0) || 0),
-    authorId: post.authorId,
+    authorId: author,
+    author,
     liked: post.liked ?? false,
     bookmarked: post.bookmarked ?? false,
     inCalendar: post.inCalendar ?? false,
@@ -101,4 +120,3 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     isPast,
   };
 }
-
