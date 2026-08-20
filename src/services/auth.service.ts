@@ -56,8 +56,8 @@ export type AuthClientMeta = {
 
 function stampAuthClient(
   user: {
-    firstDevice?: DeviceSnapshot | null;
-    lastDevice?: DeviceSnapshot | null;
+    firstDevice?: unknown;
+    lastDevice?: unknown;
     fcmToken?: string;
     set: (path: string, val: unknown) => void;
   },
@@ -67,7 +67,10 @@ function stampAuthClient(
   const incoming = normalizeDeviceInput(meta?.device ?? undefined);
   if (incoming) {
     const next = applyDeviceSnapshot(
-      { firstDevice: user.firstDevice, lastDevice: user.lastDevice },
+      {
+        firstDevice: user.firstDevice as DeviceSnapshot | null | undefined,
+        lastDevice: user.lastDevice as DeviceSnapshot | null | undefined,
+      },
       incoming,
       isNewUser || !user.firstDevice,
     );

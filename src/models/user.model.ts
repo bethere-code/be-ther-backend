@@ -39,6 +39,15 @@ const devicePermissionsSchema = new Schema(
   { _id: false },
 );
 
+const deviceLocationSchema = new Schema(
+  {
+    lat: { type: Number },
+    lng: { type: Number },
+    accuracyM: { type: Number },
+  },
+  { _id: false },
+);
+
 const deviceSnapshotSchema = new Schema(
   {
     platform: { type: String, default: '' },
@@ -47,6 +56,7 @@ const deviceSnapshotSchema = new Schema(
     appVersion: { type: String, default: '' },
     appBuild: { type: String, default: '' },
     deviceId: { type: String, default: '' },
+    location: { type: deviceLocationSchema },
     at: { type: Date, default: Date.now },
   },
   { _id: false },

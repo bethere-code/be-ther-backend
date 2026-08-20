@@ -4,11 +4,19 @@ import { z } from 'zod';
 
 import { AnalyticsEventModel } from '../../models/analytics-event.model.js';
 import { UserModel } from '../../models/user.model.js';
-import { applyDeviceSnapshot, normalizeDeviceInput } from '../../utils/device-snapshot.js';
+import { applyDeviceSnapshot, normalizeDeviceInput, type DeviceSnapshot } from '../../utils/device-snapshot.js';
 
 const MAX_BATCH = 50;
 const MAX_DURATION_MS = 30 * 60 * 1000;
 const SKIP_SCREENS = new Set(['splash']);
+
+const deviceLocationSchema = z
+  .object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    accuracyM: z.number().min(0).max(100_000).optional(),
+  })
+  .optional();
 
 const deviceSchema = z
   .object({
@@ -18,6 +26,7 @@ const deviceSchema = z
     appVersion: z.string().trim().max(32).optional(),
     appBuild: z.string().trim().max(16).optional(),
     deviceId: z.string().trim().max(128).optional(),
+    location: deviceLocationSchema,
   })
   .optional();
 
@@ -144,7 +153,10 @@ export async function registerAnalyticsV1Routes(app: FastifyInstance): Promise<v
         const user = await UserModel.findById(userId).select('firstDevice lastDevice').lean();
         if (user) {
           const next = applyDeviceSnapshot(
-            { firstDevice: user.firstDevice, lastDevice: user.lastDevice },
+            {
+              firstDevice: user.firstDevice as DeviceSnapshot | null | undefined,
+              lastDevice: user.lastDevice as DeviceSnapshot | null | undefined,
+            },
             latestAuthDevice.device,
             false,
             latestAuthDevice.at,

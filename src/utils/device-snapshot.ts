@@ -1,3 +1,9 @@
+export type DeviceLocation = {
+  lat: number;
+  lng: number;
+  accuracyM?: number;
+};
+
 export type DeviceSnapshot = {
   platform: string;
   model: string;
@@ -5,6 +11,8 @@ export type DeviceSnapshot = {
   appVersion: string;
   appBuild: string;
   deviceId: string;
+  /** Mongoose may store null; treat as missing. */
+  location?: DeviceLocation | null;
   at: Date;
 };
 
@@ -15,16 +23,41 @@ export type DeviceSnapshotInput = {
   appVersion?: unknown;
   appBuild?: unknown;
   deviceId?: unknown;
+  location?: unknown;
 };
 
 function clip(value: unknown, max: number): string {
   return String(value ?? '').trim().slice(0, max);
 }
 
-export function normalizeDeviceInput(raw: DeviceSnapshotInput | undefined | null): Omit<DeviceSnapshot, 'at'> | null {
+export function normalizeLocationInput(raw: unknown): DeviceLocation | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const lat = typeof o.lat === 'number' ? o.lat : Number(o.lat);
+  const lng = typeof o.lng === 'number' ? o.lng : Number(o.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return undefined;
+  const accuracyRaw = o.accuracyM;
+  const accuracyM =
+    accuracyRaw === undefined || accuracyRaw === null
+      ? undefined
+      : Number(accuracyRaw);
+  return {
+    lat,
+    lng,
+    ...(Number.isFinite(accuracyM) && accuracyM! >= 0
+      ? { accuracyM: Math.min(accuracyM!, 100_000) }
+      : {}),
+  };
+}
+
+export function normalizeDeviceInput(
+  raw: DeviceSnapshotInput | undefined | null,
+): Omit<DeviceSnapshot, 'at'> | null {
   if (!raw || typeof raw !== 'object') return null;
   const platform = clip(raw.platform, 32);
   if (!platform) return null;
+  const location = normalizeLocationInput(raw.location);
   return {
     platform,
     model: clip(raw.model, 80),
@@ -32,6 +65,7 @@ export function normalizeDeviceInput(raw: DeviceSnapshotInput | undefined | null
     appVersion: clip(raw.appVersion, 32),
     appBuild: clip(raw.appBuild, 16),
     deviceId: clip(raw.deviceId, 128),
+    ...(location ? { location } : {}),
   };
 }
 
@@ -42,7 +76,18 @@ export function applyDeviceSnapshot(
   isNewUser: boolean,
   now: Date = new Date(),
 ): { firstDevice: DeviceSnapshot; lastDevice: DeviceSnapshot } {
-  const last: DeviceSnapshot = { ...incoming, at: now };
+  const location =
+    incoming.location ?? normalizeLocationInput(current.lastDevice?.location) ?? undefined;
+  const last: DeviceSnapshot = {
+    platform: incoming.platform,
+    model: incoming.model,
+    os: incoming.os,
+    appVersion: incoming.appVersion,
+    appBuild: incoming.appBuild,
+    deviceId: incoming.deviceId,
+    ...(location ? { location } : {}),
+    at: now,
+  };
   if (isNewUser || !current.firstDevice) {
     return { firstDevice: last, lastDevice: last };
   }
@@ -55,6 +100,7 @@ export function applyAppVersionToLast(
   app: { version: string; build: string; platform?: string },
   now: Date = new Date(),
 ): DeviceSnapshot {
+  const location = normalizeLocationInput(last?.location);
   return {
     platform: clip(app.platform, 32) || last?.platform || '',
     model: last?.model ?? '',
@@ -62,6 +108,7 @@ export function applyAppVersionToLast(
     appVersion: clip(app.version, 32),
     appBuild: clip(app.build, 16),
     deviceId: last?.deviceId ?? '',
+    ...(location ? { location } : {}),
     at: now,
   };
 }

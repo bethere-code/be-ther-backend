@@ -23,6 +23,16 @@ const analyticsEventSchema = new Schema(
           appVersion: { type: String, default: '' },
           appBuild: { type: String, default: '' },
           deviceId: { type: String, default: '' },
+          location: {
+            type: new Schema(
+              {
+                lat: { type: Number },
+                lng: { type: Number },
+                accuracyM: { type: Number },
+              },
+              { _id: false },
+            ),
+          },
         },
         { _id: false },
       ),

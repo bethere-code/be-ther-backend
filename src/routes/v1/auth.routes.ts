@@ -15,6 +15,14 @@ import {
   verifySignupOtp,
 } from '../../services/auth.service.js';
 
+const deviceLocationSchema = z
+  .object({
+    lat: z.number().min(-90).max(90),
+    lng: z.number().min(-180).max(180),
+    accuracyM: z.number().min(0).max(100_000).optional(),
+  })
+  .optional();
+
 const deviceSchema = z
   .object({
     platform: z.string().trim().min(1).max(32),
@@ -23,6 +31,7 @@ const deviceSchema = z
     appVersion: z.string().trim().max(32).optional(),
     appBuild: z.string().trim().max(16).optional(),
     deviceId: z.string().trim().max(128).optional(),
+    location: deviceLocationSchema,
   })
   .optional();
 
