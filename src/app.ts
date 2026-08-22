@@ -10,12 +10,12 @@ import type { Env } from './config/env.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerShareRoutes } from './routes/share.routes.js';
 import { registerV1Api } from './routes/v1/index.js';
-import { createAppLogger } from './utils/logger.js';
+import { createAppLoggerOptions } from './utils/logger.js';
 import { rewriteStrippedApiPrefix } from './utils/rewrite-stripped-api-prefix.js';
 
 export async function buildApp(env: Env) {
   const app = Fastify({
-    logger: createAppLogger(env),
+    ...createAppLoggerOptions(env),
     disableRequestLogging: true,
     rewriteUrl: (req) => rewriteStrippedApiPrefix(req.url ?? '/'),
   });

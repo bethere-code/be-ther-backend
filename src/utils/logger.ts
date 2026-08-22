@@ -1,5 +1,6 @@
 import { Writable } from 'node:stream';
 
+import type { FastifyBaseLogger } from 'fastify';
 import pino from 'pino';
 
 import type { Env } from '../config/env.js';
@@ -19,17 +20,23 @@ function errorFileStream(logDir: string): Writable {
   });
 }
 
-export function createAppLogger(env: Env): pino.Logger | pino.LoggerOptions {
+type AppLoggerOptions =
+  | { logger: pino.LoggerOptions }
+  | { loggerInstance: FastifyBaseLogger };
+
+export function createAppLoggerOptions(env: Env): AppLoggerOptions {
   if (env.NODE_ENV === 'development') {
     return {
-      level: 'debug',
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-          translateTime: 'HH:MM:ss',
-          ignore: 'pid,hostname',
-          singleLine: true,
+      logger: {
+        level: 'debug',
+        transport: {
+          target: 'pino-pretty',
+          options: {
+            colorize: true,
+            translateTime: 'HH:MM:ss',
+            ignore: 'pid,hostname',
+            singleLine: true,
+          },
         },
       },
     };
@@ -38,11 +45,13 @@ export function createAppLogger(env: Env): pino.Logger | pino.LoggerOptions {
   initErrorLog(env.LOG_DIR);
   startErrorLogRetention(env.LOG_DIR);
 
-  return pino(
-    { level: 'info' },
-    pino.multistream([
-      { level: 'info', stream: process.stdout },
-      { level: 'error', stream: errorFileStream(env.LOG_DIR) },
-    ]),
-  );
+  return {
+    loggerInstance: pino(
+      { level: 'info' },
+      pino.multistream([
+        { level: 'info', stream: process.stdout },
+        { level: 'error', stream: errorFileStream(env.LOG_DIR) },
+      ]),
+    ) as FastifyBaseLogger,
+  };
 }
