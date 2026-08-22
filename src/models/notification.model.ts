@@ -6,7 +6,16 @@ const notificationSchema = new Schema(
     // 'star' kept so existing notification documents still validate.
     type: {
       type: String,
-      enum: ['follow', 'follow_request', 'star', 'wishlist', 'calendar'],
+      enum: [
+        'follow',
+        'follow_request',
+        'follow_request_accepted',
+        'follow_request_accepted_owner',
+        'follow_request_rejected_owner',
+        'star',
+        'wishlist',
+        'calendar',
+      ],
       required: true,
     },
     actorUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true },

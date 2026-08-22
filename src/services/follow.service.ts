@@ -167,6 +167,40 @@ async function clearFollowRequestNotifications(
   });
 }
 
+/** Replace the pending request alert with outcome rows for owner (+ requester on accept). */
+async function recordFollowRequestOutcome(
+  privateUserId: Types.ObjectId,
+  requesterUserId: Types.ObjectId,
+  action: 'accept' | 'reject',
+): Promise<void> {
+  await clearFollowRequestNotifications(privateUserId, requesterUserId);
+
+  if (action === 'reject') {
+    await NotificationModel.create({
+      userId: privateUserId,
+      type: 'follow_request_rejected_owner',
+      actorUserId: requesterUserId,
+      mutualFollow: false,
+    });
+    return;
+  }
+
+  await Promise.all([
+    NotificationModel.create({
+      userId: privateUserId,
+      type: 'follow_request_accepted_owner',
+      actorUserId: requesterUserId,
+      mutualFollow: false,
+    }),
+    NotificationModel.create({
+      userId: requesterUserId,
+      type: 'follow_request_accepted',
+      actorUserId: privateUserId,
+      mutualFollow: false,
+    }),
+  ]);
+}
+
 /** Drops one follow edge. Counters only move for accepted edges. */
 export async function deleteFollowEdge(followerId: string, followingId: string): Promise<boolean> {
   const followerObjectId = asObjectId(followerId);
@@ -339,7 +373,7 @@ export async function respondFollowRequest(
 
   if (action === 'reject') {
     await edge.deleteOne();
-    await clearFollowRequestNotifications(privateOid, requesterOid);
+    await recordFollowRequestOutcome(privateOid, requesterOid, 'reject');
     const target = await UserModel.findById(privateOid).select('followersCount').lean();
     return { accepted: false, followersCount: clampCount(target?.followersCount) };
   }
@@ -352,7 +386,7 @@ export async function respondFollowRequest(
     UserModel.updateOne({ _id: requesterOid }, { $inc: { followingCount: 1 } }),
   ]);
 
-  await clearFollowRequestNotifications(privateOid, requesterOid);
+  await recordFollowRequestOutcome(privateOid, requesterOid, 'accept');
 
   const target = await UserModel.findById(privateOid).select('followersCount').lean();
   return { accepted: true, followersCount: clampCount(target?.followersCount) };

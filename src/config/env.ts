@@ -36,7 +36,8 @@ const schema = z
     SHARE_WEB_BASE_URL: z.string().optional(),
 
     /** Minutes after event start before it counts as past (feed/explore/profile). */
-    EVENT_PAST_GRACE_MINUTES: z.coerce.number().int().min(0).default(60),
+    /** Directory for daily error log files (production). Pruned after 7 days. */
+    LOG_DIR: z.string().default('logs'),
 
     R2_ACCOUNT_ID: z.string().optional(),
     R2_ACCESS_KEY_ID: z.string().optional(),

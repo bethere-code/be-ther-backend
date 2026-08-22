@@ -10,27 +10,12 @@ import type { Env } from './config/env.js';
 import { registerHealthRoutes } from './routes/health.js';
 import { registerShareRoutes } from './routes/share.routes.js';
 import { registerV1Api } from './routes/v1/index.js';
+import { createAppLogger } from './utils/logger.js';
 import { rewriteStrippedApiPrefix } from './utils/rewrite-stripped-api-prefix.js';
 
 export async function buildApp(env: Env) {
-  const devLogger =
-    env.NODE_ENV === 'development'
-      ? {
-          level: 'debug',
-          transport: {
-            target: 'pino-pretty',
-            options: {
-              colorize: true,
-              translateTime: 'HH:MM:ss',
-              ignore: 'pid,hostname',
-              singleLine: true,
-            },
-          },
-        }
-      : { level: 'info' };
-
   const app = Fastify({
-    logger: devLogger,
+    logger: createAppLogger(env),
     disableRequestLogging: true,
     rewriteUrl: (req) => rewriteStrippedApiPrefix(req.url ?? '/'),
   });

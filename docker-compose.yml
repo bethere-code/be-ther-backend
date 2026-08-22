@@ -14,6 +14,7 @@ services:
       - '127.0.0.1:3000:3000'
     volumes:
       - be_ther_uploads_data:/app/uploads
+      - be_ther_logs_data:/app/logs
 
   mongodb:
     image: mongo:7
@@ -27,3 +28,4 @@ services:
 volumes:
   be_ther_mongo_data:
   be_ther_uploads_data:
+  be_ther_logs_data:
