@@ -96,6 +96,7 @@ export async function enrichPostsForViewer(
     return {
       ...post,
       authorId: author,
+      author,
       liked: likedSet.has(id),
       bookmarked: bookmarkedSet.has(id),
       // Own events are always on the author's calendar (row or post.status).

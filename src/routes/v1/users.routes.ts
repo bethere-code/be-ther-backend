@@ -148,6 +148,7 @@ function mapPostToCalendarItem(
     calendarStatus: extras?.calendarStatus ?? null,
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
     authorId: mapAuthor(post.authorId),
+    author: mapAuthor(post.authorId),
   };
 }
 
