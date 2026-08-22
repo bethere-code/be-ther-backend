@@ -850,17 +850,21 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       const postsFilter: Record<string, unknown> = { authorId: loaded.user._id };
       if (!loaded.isOwn) postsFilter.isPrivate = false;
 
-      const [postsRaw, owner] = await Promise.all([
+      const [postsRaw, hiddenOnProfile, owner] = await Promise.all([
         PostModel.find(postsFilter).sort({ createdAt: -1 }).lean(),
+        ProfileCalendarHiddenModel.find({ profileUserId: loaded.user._id }).select('postId').lean(),
         UserModel.findById(loaded.user._id).select('_id username displayName avatarUrl').lean(),
       ]);
+      const hiddenSet = new Set(hiddenOnProfile.map((h) => String(h.postId)));
       const ownerAuthor = {
         _id: loaded.user._id,
         username: owner?.username ?? '',
         displayName: owner?.displayName ?? owner?.username ?? '',
         avatarUrl: owner?.avatarUrl ?? '',
       };
-      const posts = postsRaw.map((post) => ({ ...post, authorId: ownerAuthor }));
+      const posts = postsRaw
+        .filter((post) => loaded.isOwn || !hiddenSet.has(String(post._id)))
+        .map((post) => ({ ...post, authorId: ownerAuthor }));
       const enriched = await enrichPostsForViewer(posts as never[], viewerId);
       return reply.send({ ok: true, data: { items: enriched } });
     },

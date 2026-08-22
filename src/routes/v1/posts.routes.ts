@@ -154,15 +154,17 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
       }
 
-      const post = await PostModel.findOne({
-        _id: postId,
-        ...(await postsVisibleToViewerFilter(userId)),
-      })
+      const post = await PostModel.findById(postId)
         .populate('authorId', 'username displayName avatarUrl')
         .lean();
 
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const access = await assertCanViewPost(post, userId);
+      if (!access.ok) {
+        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
       }
 
       const [enriched] = await enrichPostsForViewer([post as never], userId);

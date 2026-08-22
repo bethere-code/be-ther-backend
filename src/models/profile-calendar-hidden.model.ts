@@ -1,6 +1,6 @@
 import { Schema, model } from 'mongoose';
 
-/** Posts hidden from a user's public profile calendar (owner still sees them). */
+/** Posts hidden from a user's profile; author-hidden posts also leave feed/explore/search. */
 const profileCalendarHiddenSchema = new Schema(
   {
     profileUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
