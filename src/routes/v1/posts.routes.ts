@@ -172,9 +172,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
       }
 
-      const post = await PostModel.findById(postId)
-        .populate('authorId', 'username displayName avatarUrl')
-        .lean();
+      const post = await PostModel.findById(postId).lean();
 
       if (!post) {
         return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
@@ -185,7 +183,15 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(access.status).send({ ok: false, error: { message: access.message } });
       }
 
-      const [enriched] = await enrichPostsForViewer([post as never], userId);
+      const populated = await PostModel.findById(postId)
+        .populate('authorId', 'username displayName avatarUrl')
+        .lean();
+
+      if (!populated) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+
+      const [enriched] = await enrichPostsForViewer([populated as never], userId);
       return reply.send({ ok: true, data: { post: enriched } });
     },
   );

@@ -5,6 +5,7 @@ import { FollowModel, acceptedOnly } from '../models/follow.model.js';
 import { ProfileCalendarHiddenModel } from '../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../models/user.model.js';
 import { isBlockedEitherWay } from '../services/follow.service.js';
+import { resolvePostAuthorId } from './post-author-id.js';
 
 /**
  * Feed / explore / search: public events from public accounts, plus
@@ -90,7 +91,8 @@ export async function canViewerSeePost(
   post: { authorId: unknown; isPrivate?: boolean },
   viewerId: string,
 ): Promise<boolean> {
-  const authorId = String(post.authorId);
+  const authorId = resolvePostAuthorId(post.authorId);
+  if (!authorId) return false;
   if (authorId === viewerId) return true;
   if (await isBlockedEitherWay(viewerId, authorId)) return false;
   if (post.isPrivate) return false;
