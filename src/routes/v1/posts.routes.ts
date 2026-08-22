@@ -82,6 +82,7 @@ const createPostSchema = z.object({
   imageUrl: z.string().min(4),
   caption: captionSchema,
   isPrivate: z.boolean().optional(),
+  usesDefaultCover: z.boolean().optional(),
   taggedUsernames: z.array(z.string()).max(20).optional(),
   addToCalendar: z.boolean().optional(),
   eventDetails: z.object({
@@ -93,6 +94,23 @@ const createPostSchema = z.object({
     eventLocation: eventLocationSchema,
     userLocation: latLngSchema.optional(),
   }),
+});
+
+const updatePostSchema = z.object({
+  location: z.string().min(1).max(200).optional(),
+  status: z.enum(['been', 'going', 'interested']).optional(),
+  imageUrl: z.string().min(4).optional(),
+  caption: captionSchema,
+  usesDefaultCover: z.boolean().optional(),
+  eventDetails: z.object({
+    type: z.enum(['event', 'place', 'concert']).optional(),
+    date: z.string().optional(),
+    time: z.string().optional(),
+    venue: z.string().optional(),
+    ticketUrl: z.string().optional(),
+    eventLocation: eventLocationSchema.optional(),
+    userLocation: latLngSchema.optional(),
+  }).optional(),
 });
 
 
@@ -172,6 +190,74 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
     },
   );
 
+  app.patch(
+    '/api/v1/posts/:id',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const postId = (req.params as { id: string }).id;
+      const userId = req.userId!;
+
+      if (!Types.ObjectId.isValid(postId)) {
+        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+      }
+
+      const parsed = updatePostSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      const post = await PostModel.findById(postId);
+      if (!post) {
+        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+      }
+      if (String(post.authorId) !== userId) {
+        return reply.status(403).send({ ok: false, error: { message: 'Only the author can edit this event' } });
+      }
+
+      if (parsed.data.location !== undefined) post.location = parsed.data.location;
+      if (parsed.data.status !== undefined) post.status = parsed.data.status;
+      if (parsed.data.imageUrl !== undefined) post.imageUrl = parsed.data.imageUrl;
+      if (parsed.data.caption !== undefined) post.caption = parsed.data.caption;
+      if (parsed.data.usesDefaultCover !== undefined) {
+        post.usesDefaultCover = parsed.data.usesDefaultCover;
+      }
+
+      if (parsed.data.eventDetails) {
+        const next = parsed.data.eventDetails;
+        const current = (post.eventDetails ?? {}) as Record<string, unknown>;
+        const eventLocation = next.eventLocation;
+        post.set('eventDetails', {
+          ...current,
+          ...next,
+          venue:
+            next.venue?.trim() ||
+            eventLocation?.name?.trim() ||
+            (current.venue as string | undefined),
+        });
+        post.markModified('eventDetails');
+      }
+
+      post.editedAt = new Date();
+
+      if (parsed.data.status !== undefined) {
+        const authorStatus = parsed.data.status === 'interested' ? 'interested' : 'going';
+        await CalendarModel.findOneAndUpdate(
+          { postId: post._id, userId },
+          { status: authorStatus },
+          { upsert: true },
+        );
+      }
+
+      await post.save();
+
+      const saved = await PostModel.findById(post._id)
+        .populate('authorId', 'username displayName avatarUrl')
+        .lean();
+      const [enriched] = await enrichPostsForViewer([saved as never], userId);
+      return reply.send({ ok: true, data: { post: enriched } });
+    },
+  );
+
   app.post(
     '/api/v1/posts',
     { preHandler: [app.authenticate] },
@@ -196,6 +282,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         imageUrl: parsed.data.imageUrl,
         caption: parsed.data.caption ?? '',
         isPrivate: parsed.data.isPrivate ?? false,
+        usesDefaultCover: parsed.data.usesDefaultCover ?? false,
         taggedUserIds: taggedIds,
         eventDetails: {
           ...eventDetails,

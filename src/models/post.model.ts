@@ -55,6 +55,8 @@ const postSchema = new Schema(
     calendarCount: { type: Number, default: 0 },
     viewCount: { type: Number, default: 0 },
     isPrivate: { type: Boolean, default: false },
+    usesDefaultCover: { type: Boolean, default: false },
+    editedAt: { type: Date },
     taggedUserIds: [{ type: Schema.Types.ObjectId, ref: 'User' }],
     eventDetails: { type: eventDetailsSchema },
   },

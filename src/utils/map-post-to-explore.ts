@@ -118,5 +118,7 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     inCalendar: post.inCalendar ?? false,
     calendarStatus: post.calendarStatus ?? (post.inCalendar ? 'going' : null),
     isPast,
+    editedAt: post.editedAt ?? null,
+    usesDefaultCover: post.usesDefaultCover === true,
   };
 }

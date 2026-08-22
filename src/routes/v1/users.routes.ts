@@ -34,6 +34,8 @@ type LeanPost = {
   imageUrl: string;
   caption?: string;
   isPrivate?: boolean;
+  usesDefaultCover?: boolean;
+  editedAt?: Date | null;
   calendarCount?: number;
   viewCount?: number;
   likesCount?: number;
@@ -147,6 +149,8 @@ function mapPostToCalendarItem(
     // Always the authenticated viewer's RSVP — never the profile owner's.
     calendarStatus: extras?.calendarStatus ?? null,
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
+    editedAt: post.editedAt ?? null,
+    usesDefaultCover: post.usesDefaultCover === true,
     authorId: mapAuthor(post.authorId),
     author: mapAuthor(post.authorId),
   };
