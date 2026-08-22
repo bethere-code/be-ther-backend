@@ -27,13 +27,13 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       const scanned = await PostModel.find(await postsVisibleToViewerFilter(req.userId!))
         .sort({ createdAt: -1, _id: -1 })
         .limit(EXPLORE_SCAN_LIMIT)
+        .populate('authorId', AUTHOR_SELECT)
         .lean();
 
       const upcoming = scanned.filter((post) => !isPostEventPast(post as never));
       upcoming.sort((a, b) => compareExplorePosts(a as never, b as never));
 
       const page = upcoming.slice(skip, skip + limit);
-      await PostModel.populate(page, { path: 'authorId', select: AUTHOR_SELECT });
       const enriched = await enrichPostsForViewer(page as never[], req.userId!);
       const items = enriched.map(mapPostToExploreItem);
       const hasMore = upcoming.length > skip + limit;

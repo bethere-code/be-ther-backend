@@ -544,6 +544,7 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
   const candidates = (await PostModel.find(filter)
     .sort({ createdAt: -1, _id: -1 })
     .limit(MAX_CANDIDATES)
+    .populate('authorId', 'username displayName avatarUrl')
     .lean()) as ScoredPost[];
 
   const isoDate = parseSearchDateQuery(query);
@@ -563,7 +564,6 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
 
   const page = ranked.slice(skip, skip + limit);
   const hasMore = ranked.length > skip + limit;
-  await PostModel.populate(page, { path: 'authorId', select: 'username displayName avatarUrl' });
   const enriched = await enrichPostsForViewer(page as never[], params.viewerId);
   const items = enriched.map((post) => mapPostToExploreItem(post));
 

@@ -68,7 +68,7 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
   const country = trimStr(eventLocation?.country) || trimStr(post.country);
   const venue = trimStr(eventDetails?.venue) || trimStr(eventLocation?.name);
   const address = resolvePostEventAddress(post);
-  const author = mapExploreAuthor(post.authorId ?? post.author);
+  const author = mapExploreAuthor(post.author ?? post.authorId);
 
   return {
     _id: String(post._id),
