@@ -16,5 +16,7 @@ const calendarSchema = new Schema(
 );
 
 calendarSchema.index({ userId: 1, postId: 1 }, { unique: true });
+// Attendees pagination by post.
+calendarSchema.index({ postId: 1, createdAt: -1, _id: -1 });
 
 export const CalendarModel = model('Calendar', calendarSchema);

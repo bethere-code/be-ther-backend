@@ -6,11 +6,11 @@ import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { areMutualFollowers } from '../../services/follow.service.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
-import { compareExplorePosts, isPostEventPast } from '../../utils/event-date.js';
+import { isPostEventPast, todayIsoLocal } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
 import { canViewerSeePost, postsVisibleToViewerFilter } from '../../utils/post-visibility.js';
+import { withRouteTiming } from '../../utils/route-timing.js';
 
-const EXPLORE_SCAN_LIMIT = 400;
 const EXPLORE_PAGE_SIZE = 50;
 const AUTHOR_SELECT = 'username displayName avatarUrl';
 
@@ -18,30 +18,63 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
   app.get(
     '/api/v1/explore/events',
     { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const q = req.query as { skip?: string };
-      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
-      const limit = EXPLORE_PAGE_SIZE;
+    async (req, reply) =>
+      withRouteTiming(req.log, 'GET /api/v1/explore/events', async () => {
+        const q = req.query as { skip?: string };
+        const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+        const limit = EXPLORE_PAGE_SIZE;
+        const today = todayIsoLocal();
+        const visibility = await postsVisibleToViewerFilter(req.userId!);
 
-      // Same window as before (400 newest visible posts), one round-trip.
-      const scanned = await PostModel.find(await postsVisibleToViewerFilter(req.userId!))
-        .sort({ createdAt: -1, _id: -1 })
-        .limit(EXPLORE_SCAN_LIMIT)
-        .populate('authorId', AUTHOR_SELECT)
-        .lean();
+        // App writes ISO YYYY-MM-DD — filter + sort on eventDetails.date (indexed).
+        // Oversample + isPostEventPast trims same-day events past grace.
+        const oversample = 15;
+        const collected: Record<string, unknown>[] = [];
+        let dbSkip = skip;
+        let exhausted = false;
 
-      const upcoming = scanned.filter((post) => !isPostEventPast(post as never));
-      upcoming.sort((a, b) => compareExplorePosts(a as never, b as never));
+        while (collected.length < limit && !exhausted) {
+          const need = limit - collected.length + oversample;
+          const batch = await PostModel.find({
+            $and: [visibility, { 'eventDetails.date': { $gte: today } }],
+          })
+            .sort({
+              'eventDetails.date': 1,
+              likesCount: -1,
+              commentsCount: -1,
+              createdAt: -1,
+              _id: -1,
+            })
+            .skip(dbSkip)
+            .limit(need)
+            .populate('authorId', AUTHOR_SELECT)
+            .lean();
 
-      const page = upcoming.slice(skip, skip + limit);
-      const enriched = await enrichPostsForViewer(page as never[], req.userId!);
-      const items = enriched.map(mapPostToExploreItem);
-      const hasMore = upcoming.length > skip + limit;
-      return reply.send({
-        ok: true,
-        data: { items, nextSkip: hasMore ? skip + limit : null },
-      });
-    },
+          if (batch.length === 0) {
+            exhausted = true;
+            break;
+          }
+
+          dbSkip += batch.length;
+          if (batch.length < need) exhausted = true;
+
+          for (const post of batch) {
+            if (isPostEventPast(post as never)) continue;
+            collected.push(post as Record<string, unknown>);
+            if (collected.length >= limit) break;
+          }
+        }
+
+        const page = collected.slice(0, limit);
+        const enriched = await enrichPostsForViewer(page as never[], req.userId!);
+        const items = enriched.map(mapPostToExploreItem);
+        const nextSkip = page.length < limit ? null : skip + limit;
+
+        return reply.send({
+          ok: true,
+          data: { items, nextSkip },
+        });
+      }),
   );
 
   /** Wishlist on explore items — backed by post bookmarks (same as feed). */

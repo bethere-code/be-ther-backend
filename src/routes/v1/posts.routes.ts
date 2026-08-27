@@ -17,6 +17,7 @@ import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
 import { canViewerSeePost, postsVisibleToViewerFilter } from '../../utils/post-visibility.js';
+import { withRouteTiming } from '../../utils/route-timing.js';
 import { searchPosts } from '../../services/search.service.js';
 
 const COMMENT_AUTHOR_SELECT = 'username displayName avatarUrl';
@@ -140,25 +141,26 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
   app.get(
     '/api/v1/posts/search',
     { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const q = req.query as { query?: string; country?: string; skip?: string };
-      const query = q.query?.trim() ?? '';
-      const country = q.country?.trim();
-      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+    async (req, reply) =>
+      withRouteTiming(req.log, 'GET /api/v1/posts/search', async () => {
+        const q = req.query as { query?: string; country?: string; skip?: string };
+        const query = q.query?.trim() ?? '';
+        const country = q.country?.trim();
+        const skip = Math.max(0, Number(q.skip ?? 0) || 0);
 
-      const result = await searchPosts({
-        query,
-        country: country || undefined,
-        viewerId: req.userId!,
-        skip,
-        limit: 10,
-      });
+        const result = await searchPosts({
+          query,
+          country: country || undefined,
+          viewerId: req.userId!,
+          skip,
+          limit: 10,
+        });
 
-      return reply.send({
-        ok: true,
-        data: { items: result.items, nextSkip: result.nextSkip },
-      });
-    },
+        return reply.send({
+          ok: true,
+          data: { items: result.items, nextSkip: result.nextSkip },
+        });
+      }),
   );
 
   app.get(
@@ -281,6 +283,10 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const eventDetails = parsed.data.eventDetails;
       const eventLocation = eventDetails.eventLocation;
 
+      const eventDetailsDoc = {
+        ...eventDetails,
+        venue: eventDetails.venue?.trim() || eventLocation.name.trim() || undefined,
+      };
       const post = await PostModel.create({
         authorId,
         location: parsed.data.location,
@@ -290,10 +296,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         isPrivate: parsed.data.isPrivate ?? false,
         usesDefaultCover: parsed.data.usesDefaultCover ?? false,
         taggedUserIds: taggedIds,
-        eventDetails: {
-          ...eventDetails,
-          venue: eventDetails.venue?.trim() || eventLocation.name.trim() || undefined,
-        },
+        eventDetails: eventDetailsDoc,
       });
       await UserModel.updateOne(
         { _id: authorId },
@@ -601,95 +604,130 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
   app.get(
     '/api/v1/posts/:id/attendees',
     { preHandler: [app.authenticate] },
-    async (req, reply) => {
-      const postId = (req.params as { id: string }).id;
-      const userId = req.userId!;
-      const q = req.query as { skip?: string };
-      const skip = Math.max(0, Number(q.skip ?? 0) || 0);
-      const limit = 40;
+    async (req, reply) =>
+      withRouteTiming(req.log, 'GET /api/v1/posts/:id/attendees', async () => {
+        const postId = (req.params as { id: string }).id;
+        const userId = req.userId!;
+        const q = req.query as { skip?: string };
+        const skip = Math.max(0, Number(q.skip ?? 0) || 0);
+        const limit = 40;
+        /** Below this, keep full social-graph sort (same UX). Above: DB page + page-local social sort. */
+        const FULL_SORT_MAX = 200;
 
-      if (!Types.ObjectId.isValid(postId)) {
-        return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
-      }
+        if (!Types.ObjectId.isValid(postId)) {
+          return reply.status(400).send({ ok: false, error: { message: 'Invalid post id' } });
+        }
 
-      const postObjectId = new Types.ObjectId(postId);
-      const post = await PostModel.findById(postObjectId).lean();
-      if (!post) {
-        return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
-      }
+        const postObjectId = new Types.ObjectId(postId);
+        const post = await PostModel.findById(postObjectId).lean();
+        if (!post) {
+          return reply.status(404).send({ ok: false, error: { message: 'Post not found' } });
+        }
 
-      if (!(await canViewerSeePost(post, userId))) {
-        return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
-      }
+        if (!(await canViewerSeePost(post, userId))) {
+          return reply.status(403).send({ ok: false, error: { message: 'This event is not visible to you' } });
+        }
 
-      const [total, rows, graph] = await Promise.all([
-        CalendarModel.countDocuments({ postId: postObjectId }),
-        CalendarModel.find({ postId: postObjectId })
-          .select('userId status createdAt')
-          .populate('userId', 'username displayName avatarUrl')
-          .lean(),
-        loadViewerFollowGraph(userId),
-      ]);
+        const [total, graph] = await Promise.all([
+          CalendarModel.countDocuments({ postId: postObjectId }),
+          loadViewerFollowGraph(userId),
+        ]);
 
-      // Heal drift: feed may show calendarCount while rows were deleted.
-      if (skip === 0 && typeof post.calendarCount === 'number' && post.calendarCount !== total) {
-        void PostModel.updateOne({ _id: postObjectId }, { $set: { calendarCount: total } });
-      }
+        // Heal drift: feed may show calendarCount while rows were deleted.
+        if (skip === 0 && typeof post.calendarCount === 'number' && post.calendarCount !== total) {
+          void PostModel.updateOne({ _id: postObjectId }, { $set: { calendarCount: total } });
+        }
 
-      type AttendeeItem = {
-        _id: string;
-        username: string;
-        displayName: string;
-        avatarUrl: string;
-        calendarStatus: 'interested' | 'going';
-        status: 'interested' | 'going';
-        _createdAt: number;
-      };
+        type AttendeeItem = {
+          _id: string;
+          username: string;
+          displayName: string;
+          avatarUrl: string;
+          calendarStatus: 'interested' | 'going';
+          status: 'interested' | 'going';
+          _createdAt: number;
+        };
 
-      const mapped: AttendeeItem[] = [];
-      for (const row of rows) {
-        const u = row.userId as
-          | { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string }
-          | Types.ObjectId
-          | null
-          | undefined;
-        // Deleted / missing user — skip rather than blank rows.
-        if (!u || u instanceof Types.ObjectId || !u._id) continue;
-        const username = (u.username ?? '').trim();
-        if (!username) continue;
-        const rawStatus = (row as { status?: string }).status;
-        const status =
-          rawStatus === 'interested' || rawStatus === 'going' ? rawStatus : 'going';
-        mapped.push({
-          _id: String(u._id),
-          username,
-          displayName: (u.displayName ?? '').trim() || username,
-          avatarUrl: u.avatarUrl ?? '',
-          calendarStatus: status,
-          status,
-          _createdAt: row.createdAt ? new Date(row.createdAt).getTime() : 0,
+        const mapRows = (
+          rows: {
+            userId?: unknown;
+            status?: string;
+            createdAt?: Date;
+          }[],
+        ): AttendeeItem[] => {
+          const mapped: AttendeeItem[] = [];
+          for (const row of rows) {
+            const u = row.userId as
+              | { _id?: Types.ObjectId; username?: string; displayName?: string; avatarUrl?: string }
+              | Types.ObjectId
+              | null
+              | undefined;
+            if (!u || u instanceof Types.ObjectId || !u._id) continue;
+            const username = (u.username ?? '').trim();
+            if (!username) continue;
+            const rawStatus = row.status;
+            const status =
+              rawStatus === 'interested' || rawStatus === 'going' ? rawStatus : 'going';
+            mapped.push({
+              _id: String(u._id),
+              username,
+              displayName: (u.displayName ?? '').trim() || username,
+              avatarUrl: u.avatarUrl ?? '',
+              calendarStatus: status,
+              status,
+              _createdAt: row.createdAt ? new Date(row.createdAt).getTime() : 0,
+            });
+          }
+          return mapped;
+        };
+
+        let pageItems: Omit<AttendeeItem, '_createdAt'>[];
+        let hasMore: boolean;
+
+        if (total <= FULL_SORT_MAX) {
+          const rows = await CalendarModel.find({ postId: postObjectId })
+            .select('userId status createdAt')
+            .populate('userId', 'username displayName avatarUrl')
+            .lean();
+          const mapped = mapRows(rows);
+          const sorted = sortByViewerSocialGraph(
+            mapped,
+            userId,
+            graph,
+            (item) => item._id,
+            (item) => item._createdAt,
+          );
+          pageItems = sorted.slice(skip, skip + limit).map(({ _createdAt: _, ...item }) => item);
+          hasMore = skip + pageItems.length < sorted.length;
+        } else {
+          const rows = await CalendarModel.find({ postId: postObjectId })
+            .select('userId status createdAt')
+            .sort({ createdAt: -1, _id: -1 })
+            .skip(skip)
+            .limit(limit)
+            .populate('userId', 'username displayName avatarUrl')
+            .lean();
+          const mapped = mapRows(rows);
+          const sorted = sortByViewerSocialGraph(
+            mapped,
+            userId,
+            graph,
+            (item) => item._id,
+            (item) => item._createdAt,
+          );
+          pageItems = sorted.map(({ _createdAt: _, ...item }) => item);
+          hasMore = skip + rows.length < total;
+        }
+
+        return reply.send({
+          ok: true,
+          data: {
+            items: pageItems,
+            total,
+            nextSkip: hasMore ? skip + limit : null,
+          },
         });
-      }
-
-      // I follow → mutual → follows me → rest (viewer first when present).
-      const sorted = sortByViewerSocialGraph(
-        mapped,
-        userId,
-        graph,
-        (item) => item._id,
-        (item) => item._createdAt,
-      );
-      const page = sorted.slice(skip, skip + limit).map(({ _createdAt: _, ...item }) => item);
-      const hasMore = skip + page.length < sorted.length;
-      return reply.send({
-        ok: true,
-        data: {
-          items: page,
-          total,
-          nextSkip: hasMore ? skip + limit : null,
-        },
-      });
-    },
+      }),
   );
 
   app.get(

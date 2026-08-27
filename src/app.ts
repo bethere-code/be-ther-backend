@@ -1,5 +1,6 @@
 import multipart from '@fastify/multipart';
 import staticFiles from '@fastify/static';
+import compress from '@fastify/compress';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -20,6 +21,7 @@ export async function buildApp(env: Env) {
     rewriteUrl: (req) => rewriteStrippedApiPrefix(req.url ?? '/'),
   });
 
+  await app.register(compress, { global: true, threshold: 1024 });
   await app.register(helmet, {
     contentSecurityPolicy: {
       directives: {

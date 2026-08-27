@@ -47,7 +47,7 @@ const SCORE = {
   PAST_PENALTY: 100_000,
 } as const;
 
-const MAX_CANDIDATES = 400;
+const MAX_CANDIDATES = 200;
 const MIN_TOKEN_LEN = 1;
 
 function escapeRegex(value: string): string {
@@ -540,10 +540,15 @@ export async function searchPosts(params: SearchPostsParams): Promise<SearchPost
     ];
   }
 
-  // Pull a candidate pool, rank in memory, then page — skip before rank would break priority.
+  // Candidate pool then rank — skip before rank would break priority.
+  // Cap below previous 400 scan; still enough headroom for skip+limit ranking.
+  const candidateLimit = Math.min(
+    MAX_CANDIDATES,
+    Math.max(skip + limit * 10, 80),
+  );
   const candidates = (await PostModel.find(filter)
     .sort({ createdAt: -1, _id: -1 })
-    .limit(MAX_CANDIDATES)
+    .limit(candidateLimit)
     .populate('authorId', 'username displayName avatarUrl')
     .lean()) as ScoredPost[];
 
