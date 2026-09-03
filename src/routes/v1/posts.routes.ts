@@ -13,6 +13,7 @@ import { PostReportModel } from '../../models/post-report.model.js';
 import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } from '../../services/follow.service.js';
+import { createAndPushNotification } from '../../services/notification.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
@@ -396,7 +397,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       await BookmarkModel.create({ postId, userId });
       if (String(post.authorId) !== userId) {
         const mutual = await areMutualFollowers(userId, String(post.authorId));
-        await NotificationModel.create({
+        await createAndPushNotification({
           userId: post.authorId,
           type: 'wishlist',
           actorUserId: userId,
@@ -518,7 +519,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: 1 } });
 
       const mutual = await areMutualFollowers(userId, String(post.authorId));
-      await NotificationModel.create({
+      await createAndPushNotification({
         userId: post.authorId,
         type: 'calendar',
         actorUserId: userId,

@@ -91,8 +91,21 @@ const userSchema = new Schema(
     firstDevice: { type: deviceSnapshotSchema },
     /** Latest login phone / app. */
     lastDevice: { type: deviceSnapshotSchema },
-    /** FCM token for later push; optional until Firebase is wired. */
+    /** Latest FCM token (legacy scalar; prefer fcmDevices). */
     fcmToken: { type: String, default: '' },
+    /** Multi-device FCM registration tokens. */
+    fcmDevices: {
+      type: [
+        {
+          token: { type: String, required: true },
+          platform: { type: String, default: '' },
+          updatedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    /** Last city topic the client subscribed to (for ops / debugging). */
+    fcmCityTopic: { type: String, default: '' },
     /** Set when the user changes username. Missing = never changed (edit allowed). */
     usernameChangedAt: { type: Date },
   },
@@ -106,6 +119,8 @@ userSchema.set('toJSON', {
   transform: (_doc: unknown, ret: Record<string, any>) => {
     delete ret.passwordHash;
     delete ret.fcmToken;
+    delete ret.fcmDevices;
+    delete ret.fcmCityTopic;
     delete ret.firstDevice;
     delete ret.lastDevice;
     return ret;

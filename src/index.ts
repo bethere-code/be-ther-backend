@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 
 import { buildApp } from './app.js';
 import { loadEnv } from './config/env.js';
+import { initFirebaseAdmin } from './services/fcm.service.js';
 import { logFatalError } from './utils/error-log.js';
 import './models/user.model.js';
 import './models/otp-challenge.model.js';
@@ -45,6 +46,8 @@ async function main(): Promise<void> {
   });
 
   await mongoose.connect(env.MONGODB_URI);
+
+  initFirebaseAdmin(env);
 
   const close = async () => {
     try {

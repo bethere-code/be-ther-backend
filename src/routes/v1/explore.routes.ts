@@ -2,9 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { Types } from 'mongoose';
 
 import { BookmarkModel } from '../../models/bookmark.model.js';
-import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { areMutualFollowers } from '../../services/follow.service.js';
+import { createAndPushNotification } from '../../services/notification.service.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast, todayIsoLocal } from '../../utils/event-date.js';
 import { mapPostToExploreItem } from '../../utils/map-post-to-explore.js';
@@ -107,7 +107,7 @@ export async function registerExploreV1Routes(app: FastifyInstance): Promise<voi
       await BookmarkModel.create({ postId, userId });
       if (String(post.authorId) !== userId) {
         const mutual = await areMutualFollowers(userId, String(post.authorId));
-        await NotificationModel.create({
+        await createAndPushNotification({
           userId: post.authorId,
           type: 'wishlist',
           actorUserId: userId,

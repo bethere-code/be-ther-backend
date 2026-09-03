@@ -14,6 +14,7 @@ import {
   type DeviceSnapshot,
   type DeviceSnapshotInput,
 } from '../utils/device-snapshot.js';
+import { upsertFcmDevice, type FcmDevice } from '../utils/fcm-devices.js';
 
 export const USERNAME_SIGNUP_REGEX = /^[a-z0-9]{3,32}$/;
 
@@ -59,7 +60,9 @@ function stampAuthClient(
     firstDevice?: unknown;
     lastDevice?: unknown;
     fcmToken?: string;
+    fcmDevices?: FcmDevice[];
     set: (path: string, val: unknown) => void;
+    markModified?: (path: string) => void;
   },
   meta: AuthClientMeta | undefined,
   isNewUser: boolean,
@@ -78,7 +81,13 @@ function stampAuthClient(
     user.set('lastDevice', next.lastDevice);
   }
   const fcm = String(meta?.fcmToken ?? '').trim();
-  if (fcm) user.set('fcmToken', fcm.slice(0, 4096));
+  if (fcm) {
+    const platform = String(incoming?.platform ?? '').trim() || 'unknown';
+    user.set('fcmToken', fcm.slice(0, 4096));
+    const devices = upsertFcmDevice(user.fcmDevices, fcm, platform);
+    user.set('fcmDevices', devices);
+    user.markModified?.('fcmDevices');
+  }
 }
 
 function deviceFieldsForCreate(meta: AuthClientMeta | undefined): Record<string, unknown> {
@@ -90,7 +99,11 @@ function deviceFieldsForCreate(meta: AuthClientMeta | undefined): Record<string,
     extra.lastDevice = next.lastDevice;
   }
   const fcm = String(meta?.fcmToken ?? '').trim();
-  if (fcm) extra.fcmToken = fcm.slice(0, 4096);
+  if (fcm) {
+    const platform = String(incoming?.platform ?? '').trim() || 'unknown';
+    extra.fcmToken = fcm.slice(0, 4096);
+    extra.fcmDevices = upsertFcmDevice([], fcm, platform);
+  }
   return extra;
 }
 

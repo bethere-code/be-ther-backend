@@ -23,7 +23,14 @@ import {
   type LeanEvent,
   type SessionUser,
 } from '../../utils/analytics-sessions.js';
+import { collectUserTokens } from '../../utils/fcm-devices.js';
 import { buildEventShareUrl } from '../../utils/share-metadata.js';
+import {
+  BROADCAST_TOPIC,
+  cityTopicSlug,
+  sendToTokens,
+  sendToTopic,
+} from '../../services/fcm.service.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 const USER_SELECT =
@@ -677,6 +684,160 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           limit,
           from: range ? range.from.toISOString() : null,
           to: range ? range.to.toISOString() : null,
+        },
+      });
+    },
+  );
+
+  /**
+   * Admin push: all (broadcast topic), city topic, or specific users by username/id.
+   * Creates no in-app NotificationModel rows — ops/marketing only.
+   */
+  app.post(
+    '/api/v1/admin/push',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const parsed = z
+        .object({
+          title: z.string().trim().min(1).max(120),
+          body: z.string().trim().min(1).max(500),
+          audience: z.enum(['all', 'city', 'usernames', 'userIds']),
+          city: z.string().trim().max(120).optional(),
+          usernames: z.array(z.string().trim().min(1).max(64)).max(500).optional(),
+          userIds: z.array(z.string().trim().min(1).max(64)).max(500).optional(),
+          silent: z.boolean().optional(),
+          data: z.record(z.string(), z.string()).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+
+      const {
+        title,
+        body,
+        audience,
+        city,
+        usernames,
+        userIds,
+        silent,
+        data,
+      } = parsed.data;
+      const payload = {
+        title,
+        body,
+        silent: Boolean(silent),
+        data: {
+          type: silent ? 'unread_sync' : 'broadcast',
+          ...(data ?? {}),
+        },
+      };
+
+      if (audience === 'all') {
+        const result = await sendToTopic(BROADCAST_TOPIC, payload);
+        if (!result.ok) {
+          return reply.status(503).send({
+            ok: false,
+            error: { message: result.error ?? 'Push not available' },
+          });
+        }
+        return reply.send({
+          ok: true,
+          data: { mode: 'topic', topic: BROADCAST_TOPIC },
+        });
+      }
+
+      if (audience === 'city') {
+        const topic = city ? cityTopicSlug(city) : null;
+        if (!topic) {
+          return reply.status(400).send({
+            ok: false,
+            error: { message: 'Valid city required' },
+          });
+        }
+        const result = await sendToTopic(topic, payload);
+        if (!result.ok) {
+          return reply.status(503).send({
+            ok: false,
+            error: { message: result.error ?? 'Push not available' },
+          });
+        }
+        return reply.send({ ok: true, data: { mode: 'topic', topic } });
+      }
+
+      let users: {
+        _id: Types.ObjectId;
+        fcmToken?: string;
+        fcmDevices?: { token: string; platform?: string; updatedAt?: Date }[];
+      }[] = [];
+      if (audience === 'usernames') {
+        const list = (usernames ?? []).map((u) => u.toLowerCase()).filter(Boolean);
+        if (list.length === 0) {
+          return reply.status(400).send({
+            ok: false,
+            error: { message: 'usernames required' },
+          });
+        }
+        users = await UserModel.find({ username: { $in: list } })
+          .select('fcmToken fcmDevices')
+          .lean();
+      } else {
+        const ids = (userIds ?? []).filter((id) => Types.ObjectId.isValid(id));
+        if (ids.length === 0) {
+          return reply.status(400).send({
+            ok: false,
+            error: { message: 'userIds required' },
+          });
+        }
+        users = await UserModel.find({ _id: { $in: ids } })
+          .select('fcmToken fcmDevices')
+          .lean();
+      }
+
+      const tokens: string[] = [];
+      for (const u of users) {
+        tokens.push(...collectUserTokens(u));
+      }
+      const unique = [...new Set(tokens)];
+      if (unique.length === 0) {
+        return reply.send({
+          ok: true,
+          data: { mode: 'tokens', success: 0, failure: 0, usersMatched: users.length },
+        });
+      }
+
+      const bad: string[] = [];
+      const stats = await sendToTokens(unique, payload, (t) => bad.push(t));
+      // Best-effort prune: remove bad tokens from any matched user
+      if (bad.length) {
+        await Promise.all(
+          users.map(async (u) => {
+            const overlap = bad.filter((t) => collectUserTokens(u).includes(t));
+            if (!overlap.length) return;
+            const doc = await UserModel.findById(u._id);
+            if (!doc) return;
+            let devices = (doc.get('fcmDevices') as { token: string; platform: string; updatedAt: Date }[]) ?? [];
+            for (const t of overlap) {
+              devices = devices.filter((d) => d.token !== t);
+            }
+            doc.set('fcmDevices', devices);
+            doc.markModified('fcmDevices');
+            if (overlap.includes(String(doc.get('fcmToken') ?? ''))) {
+              doc.set('fcmToken', devices[0]?.token ?? '');
+            }
+            await doc.save();
+          }),
+        );
+      }
+
+      return reply.send({
+        ok: true,
+        data: {
+          mode: 'tokens',
+          success: stats.success,
+          failure: stats.failure,
+          usersMatched: users.length,
+          tokensTargeted: unique.length,
         },
       });
     },

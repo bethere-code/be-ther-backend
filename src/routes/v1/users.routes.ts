@@ -14,6 +14,12 @@ import { deleteFollowEdge, followPair, hasPendingFollowRequest, isBlockedEitherW
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { USERNAME_CHANGE_REGEX, usernameChangeLocked } from '../../utils/username-change.js';
+import { removeFcmDevice, upsertFcmDevice, type FcmDevice } from '../../utils/fcm-devices.js';
+import { cityTopicSlug } from '../../services/fcm.service.js';
+import {
+  calendarLandedAtMs,
+  compareCalendarLandedAt,
+} from '../../utils/calendar-landed-at.js';
 
 /** Fields populated on calendar/feed authors. Badge paused — not included. */
 const AUTHOR_SELECT = 'username displayName avatarUrl';
@@ -246,6 +252,8 @@ async function enrichUserForViewer(
   delete payload.firstDevice;
   delete payload.lastDevice;
   delete payload.fcmToken;
+  delete payload.fcmDevices;
+  delete payload.fcmCityTopic;
   delete payload.passwordHash;
   return payload;
 }
@@ -352,6 +360,85 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
           devicePermissions: user.toObject().devicePermissions,
         },
       });
+    },
+  );
+
+  const fcmDeviceBody = z.object({
+    token: z.string().trim().min(10).max(4096),
+    platform: z.string().trim().max(32).optional(),
+  });
+
+  app.put(
+    '/api/v1/users/me/fcm-devices',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const parsed = fcmDeviceBody.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const user = await UserModel.findById(req.userId);
+      if (!user) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      const platform = parsed.data.platform?.trim() || 'unknown';
+      const devices = upsertFcmDevice(
+        user.get('fcmDevices') as FcmDevice[] | undefined,
+        parsed.data.token,
+        platform,
+      );
+      user.set('fcmDevices', devices);
+      user.set('fcmToken', parsed.data.token.slice(0, 4096));
+      user.markModified('fcmDevices');
+      await user.save();
+      return reply.send({ ok: true, data: { registered: true, count: devices.length } });
+    },
+  );
+
+  app.delete(
+    '/api/v1/users/me/fcm-devices',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const parsed = fcmDeviceBody.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const user = await UserModel.findById(req.userId);
+      if (!user) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      const devices = removeFcmDevice(
+        user.get('fcmDevices') as FcmDevice[] | undefined,
+        parsed.data.token,
+      );
+      user.set('fcmDevices', devices);
+      user.markModified('fcmDevices');
+      if (String(user.get('fcmToken') ?? '') === parsed.data.token.trim()) {
+        user.set('fcmToken', devices[0]?.token ?? '');
+      }
+      await user.save();
+      return reply.send({ ok: true, data: { removed: true, count: devices.length } });
+    },
+  );
+
+  /** Persist last city topic slug after client subscribe (ops / debugging). */
+  app.put(
+    '/api/v1/users/me/fcm-city',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const parsed = z
+        .object({ city: z.string().trim().max(120).optional().nullable() })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const user = await UserModel.findById(req.userId);
+      if (!user) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      const topic = parsed.data.city ? cityTopicSlug(parsed.data.city) : null;
+      user.set('fcmCityTopic', topic ?? '');
+      await user.save();
+      return reply.send({ ok: true, data: { topic: topic ?? null } });
     },
   );
 
@@ -700,8 +787,10 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
           .lean(),
         ProfileCalendarHiddenModel.find({ profileUserId: user._id }).select('postId').lean(),
         isOwnProfile
-          ? CalendarModel.find({ userId: user._id }).select('postId status').lean()
-          : Promise.resolve([] as Array<{ postId: Types.ObjectId; status?: string }>),
+          ? CalendarModel.find({ userId: user._id }).select('postId status createdAt').lean()
+          : Promise.resolve(
+              [] as Array<{ postId: Types.ObjectId; status?: string; createdAt?: Date }>,
+            ),
         UserModel.findById(user._id).select('_id username displayName avatarUrl').lean(),
       ]);
 
@@ -779,7 +868,12 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
         }
       }
 
-      const items = mergedPosts
+      const calendarCreatedAt = new Map<string, Date>();
+      for (const entry of profileCalendar) {
+        if (entry.createdAt) calendarCreatedAt.set(String(entry.postId), entry.createdAt);
+      }
+
+      const dated = mergedPosts
         .map(({ post, source }) => {
           const id = String(post._id);
           const authorId =
@@ -793,14 +887,27 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
             ? (fromViewer ??
                 (post.status === 'interested' ? 'interested' : 'going'))
             : fromViewer;
-          return mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
+          const item = mapPostToCalendarItem(post, source, bookmarkedSet.has(id), {
             isAuthoredByViewer,
             inCalendar: calendarStatus != null,
             hiddenOnProfile: hiddenSet.has(id),
             calendarStatus,
           });
+          if (item.date == null) return null;
+          return {
+            item,
+            postId: id,
+            landedAt: calendarLandedAtMs({
+              source,
+              postCreatedAt: post.createdAt,
+              calendarCreatedAt: calendarCreatedAt.get(id),
+            }),
+          };
         })
-        .filter((item) => item.date != null);
+        .filter((row): row is NonNullable<typeof row> => row != null);
+
+      dated.sort(compareCalendarLandedAt);
+      const items = dated.map((row) => row.item);
 
       return reply.send({ ok: true, data: { items } });
     },

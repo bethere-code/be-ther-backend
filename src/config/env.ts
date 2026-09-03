@@ -39,6 +39,11 @@ const schema = z
     /** Directory for daily error log files (production). Pruned after 7 days. */
     LOG_DIR: z.string().default('logs'),
 
+    /** Firebase Admin service account — stringified JSON (preferred in prod). */
+    FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
+    /** Or path to service account JSON file (local/dev). */
+    FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
+
     R2_ACCOUNT_ID: z.string().optional(),
     R2_ACCESS_KEY_ID: z.string().optional(),
     R2_SECRET_ACCESS_KEY: z.string().optional(),

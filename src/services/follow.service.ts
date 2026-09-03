@@ -4,6 +4,7 @@ import { BlockModel } from '../models/block.model.js';
 import { FollowModel, acceptedOnly } from '../models/follow.model.js';
 import { NotificationModel } from '../models/notification.model.js';
 import { UserModel } from '../models/user.model.js';
+import { createAndPushNotification } from './notification.service.js';
 
 function asObjectId(id: string): Types.ObjectId {
   if (!Types.ObjectId.isValid(id)) {
@@ -176,7 +177,7 @@ async function recordFollowRequestOutcome(
   await clearFollowRequestNotifications(privateUserId, requesterUserId);
 
   if (action === 'reject') {
-    await NotificationModel.create({
+    await createAndPushNotification({
       userId: privateUserId,
       type: 'follow_request_rejected_owner',
       actorUserId: requesterUserId,
@@ -186,13 +187,13 @@ async function recordFollowRequestOutcome(
   }
 
   await Promise.all([
-    NotificationModel.create({
+    createAndPushNotification({
       userId: privateUserId,
       type: 'follow_request_accepted_owner',
       actorUserId: requesterUserId,
       mutualFollow: false,
     }),
-    NotificationModel.create({
+    createAndPushNotification({
       userId: requesterUserId,
       type: 'follow_request_accepted',
       actorUserId: privateUserId,
@@ -295,7 +296,7 @@ export async function toggleFollow(
       const code = (err as { code?: number })?.code;
       if (code !== 11000) throw err;
     }
-    await NotificationModel.create({
+    await createAndPushNotification({
       userId: followingObjectId,
       type: 'follow_request',
       actorUserId: followerObjectId,
@@ -331,7 +332,7 @@ export async function toggleFollow(
   ]);
 
   const mutual = await areMutualFollowers(followerId, followingId);
-  await NotificationModel.create({
+  await createAndPushNotification({
     userId: followingObjectId,
     type: 'follow',
     actorUserId: followerObjectId,
