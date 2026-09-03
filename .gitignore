@@ -5,3 +5,5 @@ dist
 *.log
 logs/
 .DS_Store
+*firebase-adminsdk*.json
+secrets/
