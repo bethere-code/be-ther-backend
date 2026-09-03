@@ -3,8 +3,10 @@
  */
 import {
   BROADCAST_TOPIC,
+  cityTopicLabel,
   cityTopicSlug,
   collectUserTokens,
+  isCityTopic,
   removeFcmDevice,
   upsertFcmDevice,
 } from '../utils/fcm-devices.js';
@@ -15,6 +17,10 @@ function assert(cond: unknown, msg: string): asserts cond {
 
 assert(cityTopicSlug('Hyderabad') === 'city_hyderabad', 'city slug');
 assert(cityTopicSlug('  ') === null, 'empty city');
+assert(isCityTopic('city_hyderabad'), 'is city topic');
+assert(!isCityTopic('broadcast'), 'broadcast is not a city topic');
+assert(cityTopicLabel('city_hyderabad') === 'Hyderabad', 'city label');
+assert(cityTopicLabel('city_new_york') === 'New York', 'multi-word city label');
 assert(BROADCAST_TOPIC === 'broadcast', 'broadcast topic');
 
 let devices = upsertFcmDevice([], 'tok_a', 'android');

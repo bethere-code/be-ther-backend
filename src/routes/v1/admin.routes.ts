@@ -23,7 +23,7 @@ import {
   type LeanEvent,
   type SessionUser,
 } from '../../utils/analytics-sessions.js';
-import { collectUserTokens } from '../../utils/fcm-devices.js';
+import { collectUserTokens, cityTopicLabel, isCityTopic } from '../../utils/fcm-devices.js';
 import { buildEventShareUrl } from '../../utils/share-metadata.js';
 import {
   BROADCAST_TOPIC,
@@ -320,6 +320,7 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         page?: string;
         limit?: string;
         authorId?: string;
+        q?: string;
       };
       const authorOk = Boolean(q.authorId && Types.ObjectId.isValid(q.authorId));
       const range = optionalCreatedRange(q);
@@ -328,8 +329,17 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       }
       const { page, limit, skip } = pageLimit(q);
       const filter: Record<string, unknown> = {};
-      if (range) filter.createdAt = { $gte: range.from, $lte: range.to };
+      const search = (q.q ?? '').trim().slice(0, 80);
+      if (range && search.length < 2) filter.createdAt = { $gte: range.from, $lte: range.to };
       if (authorOk) filter.authorId = new Types.ObjectId(q.authorId!);
+      if (search.length >= 2) {
+        if (Types.ObjectId.isValid(search) && search.length === 24) {
+          filter._id = new Types.ObjectId(search);
+        } else {
+          const rx = new RegExp(escapeRegex(search), 'i');
+          filter.$or = [{ location: rx }, { caption: rx }, { 'eventDetails.venue': rx }];
+        }
+      }
       const sortKey = q.sort === 'likesCount' ? 'likesCount' : 'createdAt';
       const dir = q.dir === 'asc' ? 1 : -1;
       const [items, total] = await Promise.all([
@@ -690,6 +700,33 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
   );
 
   /**
+   * Distinct FCM city topics currently stored on users (who subscribed via GPS).
+   */
+  app.get(
+    '/api/v1/admin/push/city-topics',
+    { preHandler: [app.authenticateAdmin] },
+    async (_req, reply) => {
+      const rows = await UserModel.aggregate<{ _id: string; subscribers: number }>([
+        { $match: { fcmCityTopic: { $gt: '' } } },
+        { $group: { _id: '$fcmCityTopic', subscribers: { $sum: 1 } } },
+        { $sort: { subscribers: -1, _id: 1 } },
+        { $limit: 200 },
+      ]);
+      const items = rows
+        .filter((r) => isCityTopic(String(r._id ?? '')))
+        .map((r) => {
+          const topic = String(r._id);
+          return {
+            topic,
+            label: cityTopicLabel(topic),
+            subscribers: r.subscribers,
+          };
+        });
+      return reply.send({ ok: true, data: { items } });
+    },
+  );
+
+  /**
    * Admin push: all (broadcast topic), city topic, or specific users by username/id.
    * Creates no in-app NotificationModel rows — ops/marketing only.
    */
@@ -703,9 +740,12 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           body: z.string().trim().min(1).max(500),
           audience: z.enum(['all', 'city', 'usernames', 'userIds']),
           city: z.string().trim().max(120).optional(),
+          topic: z.string().trim().max(90).optional(),
           usernames: z.array(z.string().trim().min(1).max(64)).max(500).optional(),
           userIds: z.array(z.string().trim().min(1).max(64)).max(500).optional(),
           silent: z.boolean().optional(),
+          screen: z.enum(['alerts', 'settings', 'profile', 'event']).optional(),
+          id: z.string().trim().min(1).max(64).optional(),
           data: z.record(z.string(), z.string()).optional(),
         })
         .safeParse(req.body);
@@ -718,11 +758,24 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         body,
         audience,
         city,
+        topic: topicRaw,
         usernames,
         userIds,
         silent,
+        screen,
+        id: openId,
         data,
       } = parsed.data;
+      if (
+        (screen === 'profile' || screen === 'event') &&
+        !openId &&
+        !silent
+      ) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: screen === 'profile' ? 'Profile username required' : 'Event id required' },
+        });
+      }
       const payload = {
         title,
         body,
@@ -730,6 +783,8 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
         data: {
           type: silent ? 'unread_sync' : 'broadcast',
           ...(data ?? {}),
+          ...(!silent && screen ? { screen } : {}),
+          ...(!silent && screen && openId ? { id: openId } : {}),
         },
       };
 
@@ -748,7 +803,12 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
       }
 
       if (audience === 'city') {
-        const topic = city ? cityTopicSlug(city) : null;
+        const topic =
+          topicRaw && isCityTopic(topicRaw)
+            ? topicRaw
+            : city
+              ? cityTopicSlug(city)
+              : null;
         if (!topic) {
           return reply.status(400).send({
             ok: false,

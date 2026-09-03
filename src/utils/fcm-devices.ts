@@ -24,6 +24,21 @@ export function cityTopicSlug(city: string): string | null {
   return `city_${slug}`;
 }
 
+export function isCityTopic(topic: string): boolean {
+  return /^city_[a-z0-9_]{2,80}$/.test(topic);
+}
+
+/** `city_hyderabad` → `Hyderabad`. */
+export function cityTopicLabel(topic: string): string {
+  if (!isCityTopic(topic)) return topic.trim();
+  return topic
+    .slice(5)
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 export const BROADCAST_TOPIC = 'broadcast';
 
 export function upsertFcmDevice(

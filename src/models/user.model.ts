@@ -113,6 +113,10 @@ const userSchema = new Schema(
 );
 
 userSchema.index({ 'settings.isPrivateProfile': 1 });
+userSchema.index(
+  { fcmCityTopic: 1 },
+  { partialFilterExpression: { fcmCityTopic: { $gt: '' } } },
+);
 
 userSchema.set('toJSON', {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
