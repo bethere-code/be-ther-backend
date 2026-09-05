@@ -49,6 +49,11 @@ const postSchema = new Schema(
     location: { type: String, required: true },
     status: { type: String, enum: ['been', 'going', 'interested'], required: true },
     imageUrl: { type: String, required: true },
+    /**
+     * Cover width÷height as uploaded (e.g. 1.5 = 3:2, 16/9, 4/3, 0.75 = default 3:4).
+     * Missing on legacy posts — clients fall back.
+     */
+    coverAspectRatio: { type: Number, min: 0.4, max: 3.5 },
     caption: { type: String, default: '' },
     likesCount: { type: Number, default: 0 },
     commentsCount: { type: Number, default: 0 },

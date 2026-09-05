@@ -120,5 +120,9 @@ export function mapPostToExploreItem(post: Record<string, unknown>): Record<stri
     isPast,
     editedAt: post.editedAt ?? null,
     usesDefaultCover: post.usesDefaultCover === true,
+    coverAspectRatio:
+      typeof post.coverAspectRatio === 'number' && Number.isFinite(post.coverAspectRatio)
+        ? post.coverAspectRatio
+        : null,
   };
 }

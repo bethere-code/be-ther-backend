@@ -9,12 +9,24 @@ type SharePost = {
   location: string;
   caption?: string;
   imageUrl?: string;
+  usesDefaultCover?: boolean;
+  coverAspectRatio?: number;
   eventDetails?: {
     date?: string | null;
     time?: string | null;
     venue?: string | null;
   } | null;
 };
+
+/** CSS aspect-ratio for share hero — mirrors app cover_aspect fallbacks. */
+export function resolveShareCoverAspect(post: SharePost): string {
+  const stored = post.coverAspectRatio;
+  if (typeof stored === 'number' && Number.isFinite(stored) && stored >= 0.4 && stored <= 3.5) {
+    return String(stored);
+  }
+  if (post.usesDefaultCover === true) return String(3 / 4);
+  return String(16 / 9);
+}
 
 export function shareWebBaseUrl(env: Env): string {
   const raw = env.SHARE_WEB_BASE_URL?.trim() || env.PUBLIC_BASE_URL.trim();
@@ -54,7 +66,7 @@ export async function loadPublicPostForShare(postId: string): Promise<SharePost 
   if (!Types.ObjectId.isValid(postId)) return null;
 
   const post = await PostModel.findOne({ _id: postId, isPrivate: false })
-    .select('location caption imageUrl eventDetails authorId')
+    .select('location caption imageUrl usesDefaultCover coverAspectRatio eventDetails authorId')
     .lean();
 
   if (!post) return null;
@@ -71,6 +83,7 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   const description = buildShareDescription(post);
   const pageUrl = buildEventShareUrl(env, postId);
   const imageUrl = post.imageUrl?.trim() || '';
+  const coverAspect = resolveShareCoverAspect(post);
   const appDeepLink = `bether://e/${postId}`;
 
   const ogImage = imageUrl
@@ -100,7 +113,7 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; background: #1a2332; color: #f5f0e8; }
     main { max-width: 480px; margin: 0 auto; padding: 24px 16px 40px; }
-    img.hero { width: 100%; aspect-ratio: 21/9; object-fit: cover; border: 2px solid #0f1419; background: #f5f0e8; }
+    img.hero { width: 100%; aspect-ratio: ${coverAspect}; object-fit: cover; border: 2px solid #0f1419; background: #f5f0e8; }
     h1 { font-size: 1.5rem; margin: 16px 0 8px; color: #f5f0e8; }
     p { color: #c4bdb0; line-height: 1.5; margin: 0 0 20px; white-space: pre-line; }
     a.btn { display: block; text-align: center; background: #e07a5f; color: #fff; padding: 14px; font-weight: 700; text-decoration: none; border: 2px solid #0f1419; letter-spacing: 0.04em; }

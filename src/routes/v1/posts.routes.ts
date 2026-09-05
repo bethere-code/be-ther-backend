@@ -85,6 +85,8 @@ const createPostSchema = z.object({
   caption: captionSchema,
   isPrivate: z.boolean().optional(),
   usesDefaultCover: z.boolean().optional(),
+  /** width / height of the cover as uploaded */
+  coverAspectRatio: z.number().min(0.4).max(3.5).optional(),
   taggedUsernames: z.array(z.string()).max(20).optional(),
   addToCalendar: z.boolean().optional(),
   eventDetails: z.object({
@@ -104,6 +106,7 @@ const updatePostSchema = z.object({
   imageUrl: z.string().min(4).optional(),
   caption: captionSchema,
   usesDefaultCover: z.boolean().optional(),
+  coverAspectRatio: z.number().min(0.4).max(3.5).optional(),
   eventDetails: z.object({
     type: z.enum(['event', 'place', 'concert']).optional(),
     date: z.string().optional(),
@@ -230,6 +233,9 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       if (parsed.data.usesDefaultCover !== undefined) {
         post.usesDefaultCover = parsed.data.usesDefaultCover;
       }
+      if (parsed.data.coverAspectRatio !== undefined) {
+        post.set('coverAspectRatio', parsed.data.coverAspectRatio);
+      }
 
       if (parsed.data.eventDetails) {
         const next = parsed.data.eventDetails;
@@ -296,6 +302,9 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         caption: parsed.data.caption ?? '',
         isPrivate: parsed.data.isPrivate ?? false,
         usesDefaultCover: parsed.data.usesDefaultCover ?? false,
+        ...(parsed.data.coverAspectRatio != null
+          ? { coverAspectRatio: parsed.data.coverAspectRatio }
+          : {}),
         taggedUserIds: taggedIds,
         eventDetails: eventDetailsDoc,
       });

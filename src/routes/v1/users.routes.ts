@@ -41,6 +41,7 @@ type LeanPost = {
   caption?: string;
   isPrivate?: boolean;
   usesDefaultCover?: boolean;
+  coverAspectRatio?: number;
   editedAt?: Date | null;
   calendarCount?: number;
   viewCount?: number;
@@ -157,6 +158,10 @@ function mapPostToCalendarItem(
     hiddenOnProfile: extras?.hiddenOnProfile ?? false,
     editedAt: post.editedAt ?? null,
     usesDefaultCover: post.usesDefaultCover === true,
+    coverAspectRatio:
+      typeof post.coverAspectRatio === 'number' && Number.isFinite(post.coverAspectRatio)
+        ? post.coverAspectRatio
+        : null,
     authorId: mapAuthor(post.authorId),
     author: mapAuthor(post.authorId),
   };
@@ -778,7 +783,7 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       if (!isOwnProfile) authoredFilter.isPrivate = false;
 
       const CALENDAR_POST_SELECT =
-        'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount';
+        'authorId location status imageUrl caption createdAt eventDetails country isPrivate calendarCount viewCount likesCount commentsCount usesDefaultCover coverAspectRatio editedAt';
 
       const [authoredRaw, hiddenOnProfile, profileCalendar, owner] = await Promise.all([
         PostModel.find(authoredFilter)
