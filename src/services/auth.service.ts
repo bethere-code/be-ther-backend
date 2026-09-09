@@ -430,20 +430,26 @@ export async function verifySignupOtp(
   const accessToken = signAccessToken(env, String(user._id));
   const refreshToken = signRefreshToken(env, String(user._id), user.tokenVersion);
 
-  return { accessToken, refreshToken, user: user.toJSON() };
+  return { accessToken, refreshToken, user: user.toJSON(), isNewUser: true };
 }
 
 export async function loginWithGoogle(
   env: Env,
   idToken: string,
   meta?: AuthClientMeta,
-): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
+): Promise<{
+  accessToken: string;
+  refreshToken: string;
+  user: unknown;
+  isNewUser: boolean;
+}> {
   const google = await verifyGoogleIdToken(env, idToken);
   if (!google.email) {
     throw new Error('Google account has no email');
   }
 
   let user = await UserModel.findOne({ googleSub: google.sub });
+  let isNewUser = false;
   if (!user) {
     user = await UserModel.findOne({ email: google.email.toLowerCase() });
     if (user) {
@@ -482,6 +488,7 @@ export async function loginWithGoogle(
         settings: defaultUserSettings(),
         ...deviceFieldsForCreate(meta),
       });
+      isNewUser = true;
     }
   } else {
     stampAuthClient(user, meta, false);
@@ -491,7 +498,7 @@ export async function loginWithGoogle(
   const accessToken = signAccessToken(env, String(user!._id));
   const refreshToken = signRefreshToken(env, String(user!._id), user!.tokenVersion);
 
-  return { accessToken, refreshToken, user: user!.toJSON() };
+  return { accessToken, refreshToken, user: user!.toJSON(), isNewUser };
 }
 
 export async function refreshTokens(
