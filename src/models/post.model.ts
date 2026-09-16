@@ -39,6 +39,8 @@ const eventDetailsSchema = new Schema(
     eventLocation: { type: eventLocationSchema },
     /** Where the poster was when they created the post (device GPS). */
     userLocation: { type: latLngSchema },
+    /** IANA timezone of the uploader's device when the event was created. */
+    timezone: { type: String, default: '' },
   },
   { _id: false },
 );

@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { buildApp } from './app.js';
 import { loadEnv } from './config/env.js';
 import { initFirebaseAdmin } from './services/fcm.service.js';
+import { startNudgeRunner, stopNudgeRunner } from './services/event-nudge.service.js';
 import { logFatalError } from './utils/error-log.js';
 import './models/user.model.js';
 import './models/otp-challenge.model.js';
@@ -24,6 +25,7 @@ import './models/user-report.model.js';
 import './models/block.model.js';
 import './models/post-view.model.js';
 import './models/analytics-event.model.js';
+import './models/event-nudge-settings.model.js';
 
 async function main(): Promise<void> {
   const env = loadEnv();
@@ -48,8 +50,10 @@ async function main(): Promise<void> {
   await mongoose.connect(env.MONGODB_URI);
 
   initFirebaseAdmin(env);
+  startNudgeRunner();
 
   const close = async () => {
+    stopNudgeRunner();
     try {
       await app.close();
       await mongoose.connection.close();

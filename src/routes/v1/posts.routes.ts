@@ -14,6 +14,7 @@ import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } from '../../services/follow.service.js';
 import { createAndPushNotification } from '../../services/notification.service.js';
+import { onCalendarStatusChanged } from '../../services/event-nudge.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
@@ -97,6 +98,8 @@ const createPostSchema = z.object({
     ticketUrl: z.string().optional(),
     eventLocation: eventLocationSchema,
     userLocation: latLngSchema.optional(),
+    /** IANA timezone from the uploader's device. */
+    timezone: z.string().trim().min(1).max(80).optional(),
   }),
 });
 
@@ -115,6 +118,7 @@ const updatePostSchema = z.object({
     ticketUrl: z.string().optional(),
     eventLocation: eventLocationSchema.optional(),
     userLocation: latLngSchema.optional(),
+    timezone: z.string().trim().min(1).max(80).optional(),
   }).optional(),
 });
 
@@ -293,6 +297,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       const eventDetailsDoc = {
         ...eventDetails,
         venue: eventDetails.venue?.trim() || eventLocation.name.trim() || undefined,
+        timezone: eventDetails.timezone?.trim() || undefined,
       };
       const post = await PostModel.create({
         authorId,
@@ -327,9 +332,13 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         await PostModel.updateOne({ _id: post._id }, { $inc: { calendarCount: 1 } });
       } else if (existing.status !== authorStatus) {
         existing.status = authorStatus;
+        if (authorStatus === 'going') {
+          existing.set('goingNudgeSentAt', undefined);
+        }
         await existing.save();
       }
       inCalendar = true;
+      void onCalendarStatusChanged({ userId: String(authorId), status: authorStatus });
 
       const json = post.toJSON() as Record<string, unknown>;
       return reply.send({
@@ -472,12 +481,18 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         } else {
           await CalendarModel.updateOne(
             { _id: existingOwn._id },
-            { $set: { status: nextStatus } },
+            {
+              $set: { status: nextStatus },
+              ...(nextStatus === 'going'
+                ? { $unset: { goingNudgeSentAt: 1 } }
+                : {}),
+            },
           );
         }
         if (post.status === 'interested' || post.status === 'going') {
           await PostModel.updateOne({ _id: postId }, { $set: { status: nextStatus } });
         }
+        void onCalendarStatusChanged({ userId, status: nextStatus });
         return reply.send({
           ok: true,
           data: { inCalendar: true, calendarStatus: nextStatus },
@@ -499,6 +514,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
           await existing.deleteOne();
           await PostModel.updateOne({ _id: postId }, { $inc: { calendarCount: -1 } });
         }
+        void onCalendarStatusChanged({ userId, status: 'none' });
         return reply.send({
           ok: true,
           data: { inCalendar: false, calendarStatus: null },
@@ -516,8 +532,14 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         // Always persist status with $set (schema default can mask missing DB field).
         await CalendarModel.updateOne(
           { _id: existing._id },
-          { $set: { status: nextStatus } },
+          {
+            $set: { status: nextStatus },
+            ...(nextStatus === 'going'
+              ? { $unset: { goingNudgeSentAt: 1 } }
+              : {}),
+          },
         );
+        void onCalendarStatusChanged({ userId, status: nextStatus });
         return reply.send({
           ok: true,
           data: { inCalendar: true, calendarStatus: nextStatus },
@@ -536,6 +558,7 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         mutualFollow: mutual,
       });
 
+      void onCalendarStatusChanged({ userId, status: nextStatus });
       return reply.send({
         ok: true,
         data: { inCalendar: true, calendarStatus: nextStatus },

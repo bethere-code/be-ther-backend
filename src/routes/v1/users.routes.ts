@@ -267,6 +267,8 @@ const patchUserSchema = z.object({
   displayName: z.string().min(1).max(80).optional(),
   bio: z.string().max(200).optional(),
   avatarUrl: z.union([z.string().url(), z.literal('')]).optional(),
+  /** IANA timezone from the device (e.g. Asia/Kolkata). */
+  timezone: z.string().trim().min(1).max(80).optional(),
   settings: z
     .object({
       isPrivateProfile: z.boolean().optional(),
@@ -326,6 +328,9 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       if (parsed.data.displayName !== undefined) user.displayName = parsed.data.displayName;
       if (parsed.data.bio !== undefined) user.bio = parsed.data.bio;
       if (parsed.data.avatarUrl !== undefined) user.avatarUrl = parsed.data.avatarUrl;
+      if (parsed.data.timezone !== undefined) {
+        user.set('timezone', parsed.data.timezone.trim().slice(0, 80));
+      }
       if (parsed.data.settings) {
         const current = (user.toObject().settings ?? {}) as Record<string, unknown>;
         user.set('settings', { ...current, ...parsed.data.settings });

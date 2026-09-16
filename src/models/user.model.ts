@@ -62,6 +62,16 @@ const deviceSnapshotSchema = new Schema(
   { _id: false },
 );
 
+const userNudgeSchema = new Schema(
+  {
+    /** Next combined interested nudge fire (UTC). */
+    interestedNextAt: { type: Date },
+    /** Local YYYY-MM-DD in user TZ when interested nudge last sent. */
+    interestedSentLocalDate: { type: String, default: '' },
+  },
+  { _id: false },
+);
+
 const userSchema = new Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
@@ -86,6 +96,9 @@ const userSchema = new Schema(
     eventsAttended: { type: Number, default: 0 },
     tokenVersion: { type: Number, default: 0 },
     settings: { type: userSettingsSchema, default: () => ({}) },
+    /** IANA timezone from the user's device (for daily interested nudge windows). */
+    timezone: { type: String, default: '' },
+    nudge: { type: userNudgeSchema, default: () => ({}) },
     devicePermissions: { type: devicePermissionsSchema, default: () => ({}) },
     /** Write-once signup phone / app. */
     firstDevice: { type: deviceSnapshotSchema },
@@ -113,6 +126,7 @@ const userSchema = new Schema(
 );
 
 userSchema.index({ 'settings.isPrivateProfile': 1 });
+userSchema.index({ 'nudge.interestedNextAt': 1 });
 userSchema.index(
   { fcmCityTopic: 1 },
   { partialFilterExpression: { fcmCityTopic: { $gt: '' } } },

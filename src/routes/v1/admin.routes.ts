@@ -31,6 +31,12 @@ import {
   sendToTokens,
   sendToTopic,
 } from '../../services/fcm.service.js';
+import {
+  getEventNudgeSettings,
+  runNudgeTick,
+  updateEventNudgeSettings,
+} from '../../services/event-nudge.service.js';
+import { normalizeTimeZone } from '../../utils/timezone.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 const USER_SELECT =
@@ -900,6 +906,63 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           tokensTargeted: unique.length,
         },
       });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/nudge-settings',
+    { preHandler: [app.authenticateAdmin] },
+    async (_req, reply) => {
+      const settings = await getEventNudgeSettings(true);
+      return reply.send({ ok: true, data: settings });
+    },
+  );
+
+  app.patch(
+    '/api/v1/admin/nudge-settings',
+    { preHandler: [app.authenticateAdmin] },
+    async (req, reply) => {
+      const parsed = z
+        .object({
+          enabled: z.boolean().optional(),
+          interestedEnabled: z.boolean().optional(),
+          goingEnabled: z.boolean().optional(),
+          quietStartHour: z.number().int().min(0).max(23).optional(),
+          quietEndHour: z.number().int().min(1).max(24).optional(),
+          goingHoursBefore: z.number().int().min(1).max(72).optional(),
+          tickIntervalMinutes: z.number().int().min(2).max(30).optional(),
+          runner: z.enum(['interval', 'external', 'off']).optional(),
+          defaultTimezone: z.string().trim().min(1).max(80).optional(),
+        })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+      }
+      const patch = { ...parsed.data };
+      if (patch.defaultTimezone) {
+        patch.defaultTimezone = normalizeTimeZone(patch.defaultTimezone);
+      }
+      if (
+        patch.quietStartHour != null &&
+        patch.quietEndHour != null &&
+        patch.quietEndHour <= patch.quietStartHour
+      ) {
+        return reply.status(400).send({
+          ok: false,
+          error: { message: 'quietEndHour must be greater than quietStartHour' },
+        });
+      }
+      const settings = await updateEventNudgeSettings(patch);
+      return reply.send({ ok: true, data: settings });
+    },
+  );
+
+  app.post(
+    '/api/v1/admin/nudge-settings/run',
+    { preHandler: [app.authenticateAdmin] },
+    async (_req, reply) => {
+      const result = await runNudgeTick();
+      return reply.send({ ok: true, data: result });
     },
   );
 }

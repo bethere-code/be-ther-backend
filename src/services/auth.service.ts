@@ -378,7 +378,7 @@ export async function verifySignupOtp(
   email: string,
   code: string,
   meta?: AuthClientMeta,
-): Promise<{ accessToken: string; refreshToken: string; user: unknown }> {
+): Promise<{ accessToken: string; refreshToken: string; user: unknown; isNewUser: boolean }> {
   const normalized = email.toLowerCase().trim();
   const challenge = await OtpChallengeModel.findOne({ email: normalized }).sort({ createdAt: -1 });
   if (!challenge || challenge.purpose !== 'signup') {

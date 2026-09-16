@@ -6,6 +6,7 @@ import { registerAnalyticsV1Routes } from './analytics.routes.js';
 import { registerAuthPlugin } from '../../plugins/auth-plugin.js';
 import { registerAuthV1Routes } from './auth.routes.js';
 import { registerExploreV1Routes } from './explore.routes.js';
+import { registerInternalV1Routes } from './internal.routes.js';
 import { registerMediaV1Routes } from './media.routes.js';
 import { registerNotificationsV1Routes } from './notifications.routes.js';
 import { registerPlacesV1Routes } from './places.routes.js';
@@ -23,4 +24,5 @@ export async function registerV1Api(app: FastifyInstance, env: Env): Promise<voi
   await registerNotificationsV1Routes(app);
   await registerAnalyticsV1Routes(app);
   await registerAdminV1Routes(app, env);
+  await registerInternalV1Routes(app, env);
 }

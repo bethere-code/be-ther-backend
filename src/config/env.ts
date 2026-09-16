@@ -37,6 +37,11 @@ const schema = z
     /** App store URLs for web share CTAs (Interested / Going). Fill when live. */
     ANDROID_STORE_URL: z.string().optional(),
     IOS_STORE_URL: z.string().optional(),
+    /**
+     * Shared secret for POST /api/v1/internal/nudge-tick (VPS cron).
+     * When set, enables external runner without keeping a busy loop — still needs API up.
+     */
+    NUDGE_TICK_SECRET: z.string().min(16).optional(),
 
     /** Minutes after event start before it counts as past (feed/explore/profile). */
     /** Directory for daily error log files (production). Pruned after 7 days. */

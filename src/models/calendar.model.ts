@@ -11,6 +11,8 @@ const calendarSchema = new Schema(
       default: 'going',
       index: true,
     },
+    /** Set when the going 6h-before nudge was sent (or skipped as past). */
+    goingNudgeSentAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -18,5 +20,6 @@ const calendarSchema = new Schema(
 calendarSchema.index({ userId: 1, postId: 1 }, { unique: true });
 // Attendees pagination by post.
 calendarSchema.index({ postId: 1, createdAt: -1, _id: -1 });
+calendarSchema.index({ status: 1, goingNudgeSentAt: 1 });
 
 export const CalendarModel = model('Calendar', calendarSchema);
