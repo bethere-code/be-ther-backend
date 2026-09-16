@@ -22,7 +22,12 @@ export async function registerShareRoutes(app: FastifyInstance, env: Env): Promi
       return reply.status(404).send(renderShareNotFoundPage());
     }
 
-    return reply.send(renderShareLandingPage(env, post));
+    const ua = req.headers['user-agent'];
+    return reply.send(
+      renderShareLandingPage(env, post, {
+        userAgent: typeof ua === 'string' ? ua : undefined,
+      }),
+    );
   });
 
   app.get('/.well-known/assetlinks.json', async (_req, reply) => {

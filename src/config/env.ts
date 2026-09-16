@@ -34,6 +34,9 @@ const schema = z
     PUBLIC_BASE_URL: z.string().default('http://127.0.0.1:3000'),
     /** Public web origin for share links (OG previews). e.g. https://be-ther.com */
     SHARE_WEB_BASE_URL: z.string().optional(),
+    /** App store URLs for web share CTAs (Interested / Going). Fill when live. */
+    ANDROID_STORE_URL: z.string().optional(),
+    IOS_STORE_URL: z.string().optional(),
 
     /** Minutes after event start before it counts as past (feed/explore/profile). */
     /** Directory for daily error log files (production). Pruned after 7 days. */

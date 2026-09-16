@@ -20,11 +20,11 @@ type SharePost = {
 
 /** CSS aspect-ratio for share hero — mirrors app cover_aspect fallbacks. */
 export function resolveShareCoverAspect(post: SharePost): string {
+  if (post.usesDefaultCover === true) return String(16 / 9);
   const stored = post.coverAspectRatio;
   if (typeof stored === 'number' && Number.isFinite(stored) && stored >= 0.4 && stored <= 3.5) {
     return String(stored);
   }
-  if (post.usesDefaultCover === true) return String(3 / 4);
   return String(16 / 9);
 }
 
@@ -35,6 +35,16 @@ export function shareWebBaseUrl(env: Env): string {
 
 export function buildEventShareUrl(env: Env, postId: string): string {
   return `${shareWebBaseUrl(env)}/e/${postId}`;
+}
+
+/** Prefer platform store; falls back to the other, then '#'. */
+export function resolveStoreUrl(env: Env, userAgent?: string): string {
+  const android = env.ANDROID_STORE_URL?.trim() || '';
+  const ios = env.IOS_STORE_URL?.trim() || '';
+  const ua = userAgent ?? '';
+  if (/iPhone|iPad|iPod/i.test(ua)) return ios || android || '#';
+  if (/Android/i.test(ua)) return android || ios || '#';
+  return android || ios || '#';
 }
 
 export function buildShareDescription(post: SharePost): string {
@@ -77,7 +87,11 @@ export async function loadPublicPostForShare(postId: string): Promise<SharePost 
   return post as SharePost;
 }
 
-export function renderShareLandingPage(env: Env, post: SharePost): string {
+export function renderShareLandingPage(
+  env: Env,
+  post: SharePost,
+  opts?: { userAgent?: string },
+): string {
   const postId = String(post._id);
   const title = post.location?.trim() || 'Be Ther Event';
   const description = buildShareDescription(post);
@@ -85,6 +99,13 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   const imageUrl = post.imageUrl?.trim() || '';
   const coverAspect = resolveShareCoverAspect(post);
   const appDeepLink = `bether://e/${postId}`;
+  const storeUrl = resolveStoreUrl(env, opts?.userAgent);
+  const androidStore = env.ANDROID_STORE_URL?.trim() || '#';
+  const iosStore = env.IOS_STORE_URL?.trim() || '#';
+  const venue = post.eventDetails?.venue?.trim() || '';
+  const date = post.eventDetails?.date?.trim() || '';
+  const time = post.eventDetails?.time?.trim() || '';
+  const metaLine = [venue, date, time].filter(Boolean).join(' · ');
 
   const ogImage = imageUrl
     ? `<meta property="og:image" content="${escapeHtml(imageUrl)}" />
@@ -111,26 +132,67 @@ export function renderShareLandingPage(env: Env, post: SharePost): string {
   <meta name="twitter:title" content="${escapeHtml(title)}" />
   <meta name="twitter:description" content="${escapeHtml(description)}" />
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #1a2332; color: #f5f0e8; }
+    :root { --cream:#f5f1e8; --navy:#1a2332; --coral:#d4745e; --muted:#c4bdb0; --radius:14px; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: var(--navy); color: var(--cream); }
     main { max-width: 480px; margin: 0 auto; padding: 24px 16px 40px; }
-    img.hero { width: 100%; aspect-ratio: ${coverAspect}; object-fit: cover; border: 2px solid #0f1419; background: #f5f0e8; }
-    h1 { font-size: 1.5rem; margin: 16px 0 8px; color: #f5f0e8; }
-    p { color: #c4bdb0; line-height: 1.5; margin: 0 0 20px; white-space: pre-line; }
-    a.btn { display: block; text-align: center; background: #e07a5f; color: #fff; padding: 14px; font-weight: 700; text-decoration: none; border: 2px solid #0f1419; letter-spacing: 0.04em; }
+    img.hero { width: 100%; aspect-ratio: ${coverAspect}; object-fit: cover; border: 2px solid #0f1419; border-radius: var(--radius); background: var(--cream); }
+    h1 { font-size: 1.5rem; margin: 16px 0 8px; color: var(--cream); }
+    .meta { color: var(--muted); font-size: 0.9rem; margin: 0 0 12px; }
+    p.body { color: var(--muted); line-height: 1.5; margin: 0 0 20px; white-space: pre-line; }
+    .actions { display: grid; gap: 10px; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    a.btn, button.btn {
+      display: block; width: 100%; text-align: center; padding: 14px 12px; font-weight: 700;
+      text-decoration: none; border: 2px solid #0f1419; border-radius: var(--radius);
+      letter-spacing: 0.04em; font-size: 0.95rem; cursor: pointer; box-sizing: border-box;
+      font-family: inherit;
+    }
+    a.btn-primary, button.btn-primary { background: var(--coral); color: #fff; }
+    a.btn-secondary, button.btn-secondary { background: var(--cream); color: var(--navy); }
+    a.btn-ghost { background: transparent; color: var(--cream); border-color: rgba(245,241,232,0.35); }
     .hint { margin-top: 16px; font-size: 0.85rem; color: #8a8378; text-align: center; }
+    .readonly { margin: 0 0 8px; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: #8a8378; }
   </style>
 </head>
 <body>
   <main>
+    <p class="readonly">Read-only preview</p>
     ${imageUrl ? `<img class="hero" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}" />` : ''}
     <h1>${escapeHtml(title)}</h1>
-    <p>${escapeHtml(description)}</p>
-    <a class="btn" id="open-app" href="${escapeHtml(appDeepLink)}">Open in Be Ther</a>
-    <p class="hint">If the app is not installed, stay on this page to view the event.</p>
+    ${metaLine ? `<p class="meta">${escapeHtml(metaLine)}</p>` : ''}
+    <p class="body">${escapeHtml(description)}</p>
+    <div class="actions">
+      <div class="row">
+        <button type="button" class="btn btn-secondary" data-store-cta="interested">Interested</button>
+        <button type="button" class="btn btn-primary" data-store-cta="going">Going</button>
+      </div>
+      <a class="btn btn-ghost" id="open-app" href="${escapeHtml(appDeepLink)}">Open in Be Ther</a>
+    </div>
+    <p class="hint">Have the app? We’ll open this event. Otherwise get Be Ther to join or mark interested.</p>
   </main>
   <script>
     (function () {
       var deepLink = ${JSON.stringify(appDeepLink)};
+      var storeUrl = ${JSON.stringify(storeUrl)};
+      var androidStore = ${JSON.stringify(androidStore)};
+      var iosStore = ${JSON.stringify(iosStore)};
+      function pickStore() {
+        var ua = navigator.userAgent || '';
+        if (/iPhone|iPad|iPod/i.test(ua)) return iosStore !== '#' ? iosStore : storeUrl;
+        if (/Android/i.test(ua)) return androidStore !== '#' ? androidStore : storeUrl;
+        return storeUrl;
+      }
+      function goStore() {
+        var url = pickStore();
+        if (!url || url === '#') {
+          alert('App store link coming soon. Install Be Ther to join this event.');
+          return;
+        }
+        window.location.href = url;
+      }
+      document.querySelectorAll('[data-store-cta]').forEach(function (el) {
+        el.addEventListener('click', goStore);
+      });
       var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       if (!isMobile) return;
       var openedAt = Date.now();
