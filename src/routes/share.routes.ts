@@ -18,16 +18,14 @@ export async function registerShareRoutes(app: FastifyInstance, env: Env): Promi
       // Let crawlers re-fetch after event edits; WhatsApp still caches aggressively.
       .header('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400');
 
+    const ua = req.headers['user-agent'];
+    const userAgent = typeof ua === 'string' ? ua : undefined;
+
     if (!post) {
-      return reply.status(404).send(renderShareNotFoundPage());
+      return reply.status(404).send(renderShareNotFoundPage(env, { userAgent }));
     }
 
-    const ua = req.headers['user-agent'];
-    return reply.send(
-      renderShareLandingPage(env, post, {
-        userAgent: typeof ua === 'string' ? ua : undefined,
-      }),
-    );
+    return reply.send(renderShareLandingPage(env, post, { userAgent }));
   });
 
   app.get('/.well-known/assetlinks.json', async (_req, reply) => {

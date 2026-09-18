@@ -208,17 +208,136 @@ export function renderShareLandingPage(
 </html>`;
 }
 
-export function renderShareNotFoundPage(): string {
+/** Branded 404 for dead / private / invalid share links — same chrome as the live preview. */
+export function renderShareNotFoundPage(
+  env: Env,
+  opts?: { userAgent?: string },
+): string {
+  const homeUrl = shareWebBaseUrl(env) || 'https://be-ther.com';
+  const storeUrl = resolveStoreUrl(env, opts?.userAgent);
+  const androidStore = env.ANDROID_STORE_URL?.trim() || '#';
+  const iosStore = env.IOS_STORE_URL?.trim() || '#';
+  const logoUrl = `${homeUrl}/WhatsApp_Image_2026-06-28_at_22.46.20_(1).jpeg`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Event not found · Be Ther</title>
+  <meta name="description" content="This Be Ther event link is invalid or no longer available." />
+  <meta name="robots" content="noindex" />
+  <style>
+    :root { --cream:#f5f1e8; --navy:#1a2332; --coral:#d4745e; --muted:#c4bdb0; --radius:14px; --ink:#0f1419; }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      margin: 0; min-height: 100dvh; background: var(--navy); color: var(--cream);
+      display: flex; align-items: center; justify-content: center;
+    }
+    main {
+      width: 100%; max-width: 420px; margin: 0 auto; padding: 32px 20px 40px;
+      text-align: center;
+    }
+    .brand {
+      display: inline-flex; align-items: center; gap: 10px;
+      text-decoration: none; color: var(--cream); margin-bottom: 28px;
+    }
+    .brand img {
+      width: 44px; height: 44px; border-radius: 12px; object-fit: cover;
+      border: 2px solid var(--ink); background: var(--cream);
+    }
+    .brand span {
+      font-weight: 800; letter-spacing: 0.04em; font-size: 1.05rem;
+    }
+    .art {
+      width: 160px; height: 160px; margin: 0 auto 22px;
+      border-radius: var(--radius); border: 2px solid var(--ink);
+      background: linear-gradient(160deg, #243044 0%, #1a2332 55%, #3d2a28 100%);
+      display: grid; place-items: center;
+      box-shadow: 6px 6px 0 var(--ink);
+    }
+    .art svg { width: 96px; height: 96px; }
+    .eyebrow {
+      margin: 0 0 8px; font-size: 0.72rem; letter-spacing: 0.12em;
+      text-transform: uppercase; color: #8a8378; font-weight: 700;
+    }
+    h1 {
+      font-size: 1.65rem; line-height: 1.2; margin: 0 0 10px; color: var(--cream);
+      letter-spacing: -0.01em;
+    }
+    p.body {
+      color: var(--muted); line-height: 1.55; margin: 0 0 28px; font-size: 0.98rem;
+    }
+    .actions { display: grid; gap: 10px; }
+    a.btn {
+      display: block; width: 100%; text-align: center; padding: 14px 12px; font-weight: 700;
+      text-decoration: none; border: 2px solid var(--ink); border-radius: var(--radius);
+      letter-spacing: 0.04em; font-size: 0.95rem; cursor: pointer;
+      font-family: inherit;
+    }
+    a.btn-primary { background: var(--coral); color: #fff; }
+    a.btn-ghost {
+      background: transparent; color: var(--cream);
+      border-color: rgba(245,241,232,0.35);
+    }
+    .hint { margin-top: 18px; font-size: 0.82rem; color: #8a8378; line-height: 1.45; }
+  </style>
 </head>
-<body style="font-family:system-ui,sans-serif;background:#0f0f0f;color:#f5f5f5;text-align:center;padding:48px 16px;">
-  <h1>Event not found</h1>
-  <p>This link may be invalid or the event is no longer available.</p>
+<body>
+  <main>
+    <a class="brand" href="${escapeHtml(homeUrl)}">
+      <img src="${escapeHtml(logoUrl)}" alt="" width="44" height="44" />
+      <span>Be Ther</span>
+    </a>
+    <div class="art" aria-hidden="true">
+      <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="14" y="22" width="68" height="58" rx="10" fill="#f5f1e8" stroke="#0f1419" stroke-width="3"/>
+        <rect x="14" y="22" width="68" height="16" rx="10" fill="#d4745e" stroke="#0f1419" stroke-width="3"/>
+        <rect x="14" y="30" width="68" height="8" fill="#d4745e"/>
+        <path d="M30 16v12M66 16v12" stroke="#0f1419" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="34" cy="52" r="4" fill="#1a2332" opacity="0.2"/>
+        <circle cx="48" cy="52" r="4" fill="#1a2332" opacity="0.2"/>
+        <circle cx="62" cy="52" r="4" fill="#1a2332" opacity="0.2"/>
+        <circle cx="34" cy="66" r="4" fill="#1a2332" opacity="0.2"/>
+        <circle cx="48" cy="66" r="4" fill="#1a2332" opacity="0.15"/>
+        <circle cx="68" cy="70" r="14" fill="#1a2332" stroke="#0f1419" stroke-width="3"/>
+        <path d="M62 70h12M68 64v12" stroke="#f5f1e8" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <p class="eyebrow">Unavailable</p>
+    <h1>This event isn’t here anymore</h1>
+    <p class="body">The link may be invalid, private, or the event was removed. Grab Be Ther and find what’s happening next.</p>
+    <div class="actions">
+      <a class="btn btn-primary" id="get-app" href="${escapeHtml(storeUrl)}">Get Be Ther</a>
+      <a class="btn btn-ghost" href="${escapeHtml(homeUrl)}">Back to Be Ther</a>
+    </div>
+    <p class="hint">On your phone, Get Be Ther opens the App Store or Play Store for your device.</p>
+  </main>
+  <script>
+    (function () {
+      var storeUrl = ${JSON.stringify(storeUrl)};
+      var androidStore = ${JSON.stringify(androidStore)};
+      var iosStore = ${JSON.stringify(iosStore)};
+      function pickStore() {
+        var ua = navigator.userAgent || '';
+        if (/iPhone|iPad|iPod/i.test(ua)) return iosStore !== '#' ? iosStore : storeUrl;
+        if (/Android/i.test(ua)) return androidStore !== '#' ? androidStore : storeUrl;
+        return storeUrl;
+      }
+      var btn = document.getElementById('get-app');
+      if (!btn) return;
+      var url = pickStore();
+      if (url && url !== '#') {
+        btn.setAttribute('href', url);
+      } else {
+        btn.addEventListener('click', function (e) {
+          e.preventDefault();
+          alert('App store link coming soon. Visit be-ther.com to learn more.');
+        });
+      }
+    })();
+  </script>
 </body>
 </html>`;
 }
