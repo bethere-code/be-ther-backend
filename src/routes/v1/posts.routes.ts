@@ -13,7 +13,10 @@ import { PostReportModel } from '../../models/post-report.model.js';
 import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } from '../../services/follow.service.js';
-import { createAndPushNotification } from '../../services/notification.service.js';
+import {
+  createAndPushNotification,
+  upsertLikeAndPushNotification,
+} from '../../services/notification.service.js';
 import { onCalendarStatusChanged } from '../../services/event-nudge.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
@@ -382,6 +385,16 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
       }
       await LikeModel.create({ postId, userId });
       await PostModel.updateOne({ _id: postId }, { $inc: { likesCount: 1 } });
+      if (String(post.authorId) !== userId) {
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
+        await upsertLikeAndPushNotification({
+          userId: post.authorId,
+          type: 'like',
+          actorUserId: userId,
+          postId,
+          mutualFollow: mutual,
+        });
+      }
       return reply.send({ ok: true, data: { liked: true } });
     },
   );
@@ -413,16 +426,6 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.send({ ok: true, data: { bookmarked: false } });
       }
       await BookmarkModel.create({ postId, userId });
-      if (String(post.authorId) !== userId) {
-        const mutual = await areMutualFollowers(userId, String(post.authorId));
-        await createAndPushNotification({
-          userId: post.authorId,
-          type: 'wishlist',
-          actorUserId: userId,
-          postId,
-          mutualFollow: mutual,
-        });
-      }
       return reply.send({ ok: true, data: { bookmarked: true } });
     },
   );
@@ -959,6 +962,17 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         text: parsed.data.text,
       });
       await PostModel.updateOne({ _id: postObjectId }, { $inc: { commentsCount: 1 } });
+
+      if (String(post.authorId) !== userId) {
+        const mutual = await areMutualFollowers(userId, String(post.authorId));
+        await createAndPushNotification({
+          userId: post.authorId,
+          type: 'comment',
+          actorUserId: userId,
+          postId: postObjectId,
+          mutualFollow: mutual,
+        });
+      }
 
       const populated = await CommentModel.findById(comment._id)
         .populate('authorId', COMMENT_AUTHOR_SELECT)

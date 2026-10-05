@@ -15,11 +15,15 @@ const notificationSchema = new Schema(
         'star',
         'wishlist',
         'calendar',
+        'like',
+        'comment',
       ],
       required: true,
     },
     actorUserId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     postId: { type: Schema.Types.ObjectId, ref: 'Post' },
+    /** Last FCM send for this row (like throttle). */
+    lastPushAt: { type: Date },
     read: { type: Boolean, default: false },
     mutualFollow: { type: Boolean, default: false },
     /** @deprecated Use mutualFollow. Kept for older notification rows. */
@@ -29,5 +33,10 @@ const notificationSchema = new Schema(
 );
 
 notificationSchema.index({ userId: 1, read: 1, createdAt: -1 });
+// One in-app row per author + liker + event.
+notificationSchema.index(
+  { userId: 1, actorUserId: 1, postId: 1 },
+  { unique: true, partialFilterExpression: { type: 'like' } },
+);
 
 export const NotificationModel = model('Notification', notificationSchema);

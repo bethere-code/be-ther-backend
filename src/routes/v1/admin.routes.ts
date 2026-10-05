@@ -17,6 +17,10 @@ import { UserModel } from '../../models/user.model.js';
 import { UserReportModel } from '../../models/user-report.model.js';
 import { parseAdminLogins } from '../../utils/admin-logins.js';
 import {
+  ACTIVE_USER_WINDOW_MINUTES,
+  activeUsersSince,
+} from '../../utils/active-users.js';
+import {
   groupAnalyticsSessions,
   MAX_SESSION_SCAN,
   sortSessions,
@@ -546,6 +550,33 @@ export async function registerAdminV1Routes(app: FastifyInstance, env: Env): Pro
           limit,
           from: range ? range.from.toISOString() : null,
           to: range ? range.to.toISOString() : null,
+        },
+      });
+    },
+  );
+
+  app.get(
+    '/api/v1/admin/analytics/active-users',
+    { preHandler: [app.authenticateAdmin] },
+    async (_req, reply) => {
+      const since = activeUsersSince();
+      const rows = await AnalyticsEventModel.aggregate<{ count: number }>([
+        {
+          $match: {
+            type: 'screen_time',
+            occurredAt: { $gte: since },
+          },
+        },
+        { $group: { _id: '$userId' } },
+        { $count: 'count' },
+      ]);
+      const count = rows[0]?.count ?? 0;
+      return reply.send({
+        ok: true,
+        data: {
+          count,
+          windowMinutes: ACTIVE_USER_WINDOW_MINUTES,
+          asOf: new Date().toISOString(),
         },
       });
     },

@@ -7,7 +7,7 @@ pipeline {
   }
 
   environment {
-    COMPOSE_FILE = "docker-compose.prod.yml"
+    COMPOSE_FILE = "docker-compose.yml"
     DEPLOY_DIR = "/opt/be-ther/be-ther-backend"
   }
 
