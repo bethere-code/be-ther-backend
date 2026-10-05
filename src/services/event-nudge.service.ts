@@ -77,7 +77,6 @@ export async function updateEventNudgeSettings(
   for (const k of allowed) {
     if (patch[k] !== undefined) $set[k] = patch[k];
   }
-  $set.key = 'event_nudges';
   const doc = await EventNudgeSettingsModel.findOneAndUpdate(
     { key: 'event_nudges' },
     { $set, $setOnInsert: { key: 'event_nudges' } },
