@@ -352,6 +352,8 @@ function storePickerScript(opts: {
   androidStore: string;
   iosStore: string;
   deepLink?: string;
+  /** Try custom-scheme open as soon as the page loads (public previews). */
+  autoOpen?: boolean;
 }): string {
   return `<script>
     (function () {
@@ -359,25 +361,47 @@ function storePickerScript(opts: {
       var androidStore = ${JSON.stringify(opts.androidStore)};
       var iosStore = ${JSON.stringify(opts.iosStore)};
       var deepLink = ${JSON.stringify(opts.deepLink ?? '')};
+      var autoOpen = ${opts.autoOpen === true ? 'true' : 'false'};
       function pickStore() {
         var ua = navigator.userAgent || '';
         if (/iPhone|iPad|iPod/i.test(ua)) return iosStore !== '#' ? iosStore : storeUrl;
         if (/Android/i.test(ua)) return androidStore !== '#' ? androidStore : storeUrl;
         return storeUrl;
       }
-      var btn = document.getElementById('get-app');
-      if (btn) {
+      function goStore() {
         var url = pickStore();
-        if (url && url !== '#') {
-          btn.setAttribute('href', url);
-        } else {
-          btn.addEventListener('click', function (e) {
-            e.preventDefault();
-            alert('App store link coming soon. Visit be-ther.com to learn more.');
-          });
+        if (!url || url === '#') {
+          alert('App store link coming soon. Visit be-ther.com to learn more.');
+          return;
         }
+        window.location.href = url;
       }
-      if (!deepLink) return;
+      // Get Be Ther → always store (Play / App Store by device).
+      var getBtn = document.getElementById('get-app');
+      if (getBtn) {
+        var storeHref = pickStore();
+        if (storeHref && storeHref !== '#') getBtn.setAttribute('href', storeHref);
+        getBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          goStore();
+        });
+      }
+      // Open in Be Ther → try app; if still here after a beat, go to store.
+      var openBtn = document.getElementById('open-app');
+      if (openBtn && deepLink) {
+        openBtn.setAttribute('href', deepLink);
+        openBtn.addEventListener('click', function (e) {
+          e.preventDefault();
+          var started = Date.now();
+          window.location.href = deepLink;
+          setTimeout(function () {
+            if (document.visibilityState === 'visible' && Date.now() - started < 2800) {
+              goStore();
+            }
+          }, 1600);
+        });
+      }
+      if (!autoOpen || !deepLink) return;
       var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
       if (!isMobile) return;
       window.location.href = deepLink;
@@ -443,7 +467,6 @@ export function renderSharePrivatePage(
   const iosStore = env.IOS_STORE_URL?.trim() || '#';
   const logoUrl = `${homeUrl}/WhatsApp_Image_2026-06-28_at_22.46.20_(1).jpeg`;
   const appDeepLink = `bether://e/${input.postId}`;
-  const httpsDeepLink = `${homeUrl}/e/${input.postId}`;
   const copy = privateShareCopy(input.ownerName, input.reason);
 
   return `<!DOCTYPE html>
@@ -471,26 +494,15 @@ export function renderSharePrivatePage(
       <a class="btn btn-ghost" id="get-app" href="${escapeHtml(storeUrl)}">Get Be Ther</a>
       <a class="btn btn-ghost" href="${escapeHtml(homeUrl)}">Back to Be Ther</a>
     </div>
-    <p class="hint">Have the app? Open in Be Ther to follow ${escapeHtml(input.ownerName)} and view their events.</p>
+    <p class="hint">Open in Be Ther launches the app if installed, otherwise the store. Get Be Ther goes straight to the store.</p>
   </main>
   ${storePickerScript({
     storeUrl,
     androidStore,
     iosStore,
     deepLink: appDeepLink,
+    autoOpen: false,
   })}
-  <script>
-    (function () {
-      var openBtn = document.getElementById('open-app');
-      if (!openBtn) return;
-      openBtn.addEventListener('click', function (e) {
-        // Prefer custom scheme; https App Link / Universal Link as fallback.
-        setTimeout(function () {
-          window.location.href = ${JSON.stringify(httpsDeepLink)};
-        }, 400);
-      });
-    })();
-  </script>
 </body>
 </html>`;
 }
