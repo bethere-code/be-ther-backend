@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { Types } from 'mongoose';
 
 import {
+  privateShareCopy,
   renderShareNotFoundPage,
+  renderSharePrivatePage,
   resolveShareCoverAspect,
   resolveStoreUrl,
 } from './share-metadata.js';
@@ -39,10 +41,24 @@ assert.match(notFound, /Back to Be Ther/);
 assert.match(notFound, /https:\/\/ios\.example\/a/);
 assert.match(notFound, /--coral:#d4745e/);
 assert.match(notFound, /This event isn’t here anymore/);
+assert.doesNotMatch(notFound, /private/i);
 
 const notFoundAndroid = renderShareNotFoundPage(stores, {
   userAgent: 'Android',
 });
 assert.match(notFoundAndroid, /https:\/\/play\.example\/a/);
+
+const privateCopy = privateShareCopy('Kranthi', 'profile');
+assert.match(privateCopy.body, /follow Kranthi/);
+const privatePage = renderSharePrivatePage(stores, {
+  postId: String(id),
+  ownerName: 'Kranthi',
+  reason: 'profile',
+  userAgent: 'iPhone',
+});
+assert.match(privatePage, /This event is private/);
+assert.match(privatePage, /follow Kranthi/);
+assert.match(privatePage, /bether:\/\/e\//);
+assert.doesNotMatch(privatePage, /isn’t here anymore/);
 
 console.log('share-metadata.check: ok');

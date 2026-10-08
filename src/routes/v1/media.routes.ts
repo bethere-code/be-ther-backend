@@ -32,7 +32,7 @@ export async function registerMediaV1Routes(app: FastifyInstance, env: Env): Pro
       }
 
       try {
-        const preview = await fetchLinkPreview(parsed.data.url);
+        const preview = await fetchLinkPreview(parsed.data.url, env);
         return reply.send({ ok: true, data: preview });
       } catch (err) {
         const status =

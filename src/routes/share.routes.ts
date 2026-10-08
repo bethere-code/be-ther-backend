@@ -2,16 +2,17 @@ import type { FastifyInstance } from 'fastify';
 
 import type { Env } from '../config/env.js';
 import {
-  loadPublicPostForShare,
+  loadPostForShare,
   renderShareLandingPage,
   renderShareNotFoundPage,
+  renderSharePrivatePage,
 } from '../utils/share-metadata.js';
 
 export async function registerShareRoutes(app: FastifyInstance, env: Env): Promise<void> {
   /** HTML + Open Graph for WhatsApp / iMessage / etc. Must be proxied at site root `/e/`. */
   app.get('/e/:postId', async (req, reply) => {
     const postId = (req.params as { postId: string }).postId;
-    const post = await loadPublicPostForShare(postId);
+    const result = await loadPostForShare(postId);
 
     reply
       .header('Content-Type', 'text/html; charset=utf-8')
@@ -21,23 +22,39 @@ export async function registerShareRoutes(app: FastifyInstance, env: Env): Promi
     const ua = req.headers['user-agent'];
     const userAgent = typeof ua === 'string' ? ua : undefined;
 
-    if (!post) {
+    if (result.status === 'missing') {
       return reply.status(404).send(renderShareNotFoundPage(env, { userAgent }));
     }
 
-    return reply.send(renderShareLandingPage(env, post, { userAgent }));
+    if (result.status === 'private') {
+      return reply.status(403).send(
+        renderSharePrivatePage(env, {
+          postId: result.postId,
+          ownerName: result.ownerName,
+          reason: result.reason,
+          userAgent,
+        }),
+      );
+    }
+
+    return reply.send(renderShareLandingPage(env, result.post, { userAgent }));
   });
 
   app.get('/.well-known/assetlinks.json', async (_req, reply) => {
+    const fingerprints = (env.ANDROID_SHA256_CERT_FINGERPRINTS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     return reply.send([
       {
         relation: ['delegate_permission/common.handle_all_urls'],
         target: {
           namespace: 'android_app',
           package_name: 'com.bether.app',
-          sha256_cert_fingerprints: [
-            'REPLACE_WITH_RELEASE_SHA256_FINGERPRINT',
-          ],
+          sha256_cert_fingerprints:
+            fingerprints.length > 0
+              ? fingerprints
+              : ['REPLACE_WITH_RELEASE_SHA256_FINGERPRINT'],
         },
       },
     ]);
@@ -45,12 +62,13 @@ export async function registerShareRoutes(app: FastifyInstance, env: Env): Promi
 
   app.get('/.well-known/apple-app-site-association', async (_req, reply) => {
     reply.header('Content-Type', 'application/json');
+    const teamId = env.IOS_TEAM_ID?.trim() || 'TEAMID';
     return reply.send({
       applinks: {
         apps: [],
         details: [
           {
-            appID: 'TEAMID.com.bether.app',
+            appID: `${teamId}.com.bether.app`,
             paths: ['/e/*'],
           },
         ],

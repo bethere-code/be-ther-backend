@@ -72,19 +72,74 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-export async function loadPublicPostForShare(postId: string): Promise<SharePost | null> {
-  if (!Types.ObjectId.isValid(postId)) return null;
+export type ShareLookup =
+  | { status: 'ok'; post: SharePost }
+  | {
+      status: 'private';
+      postId: string;
+      ownerName: string;
+      /** Profile private → followers only; event private → host only. */
+      reason: 'profile' | 'event';
+    }
+  | { status: 'missing' };
 
-  const post = await PostModel.findOne({ _id: postId, isPrivate: false })
-    .select('location caption imageUrl usesDefaultCover coverAspectRatio eventDetails authorId')
+function ownerDisplayName(author: {
+  displayName?: string | null;
+  username?: string | null;
+} | null): string {
+  const name = author?.displayName?.trim() || author?.username?.trim();
+  return name && name.length > 0 ? name : 'This user';
+}
+
+/** Public share preview, or why the link cannot show a full preview. */
+export async function loadPostForShare(postId: string): Promise<ShareLookup> {
+  if (!Types.ObjectId.isValid(postId)) return { status: 'missing' };
+
+  const post = await PostModel.findById(postId)
+    .select(
+      'location caption imageUrl usesDefaultCover coverAspectRatio eventDetails authorId isPrivate',
+    )
     .lean();
 
-  if (!post) return null;
+  if (!post) return { status: 'missing' };
+
   const author = await UserModel.findById(post.authorId)
-    .select('settings.isPrivateProfile')
+    .select('displayName username settings.isPrivateProfile')
     .lean();
-  if (author?.settings?.isPrivateProfile) return null;
-  return post as SharePost;
+  const ownerName = ownerDisplayName(author);
+
+  if (post.isPrivate) {
+    return { status: 'private', postId: String(post._id), ownerName, reason: 'event' };
+  }
+  if (author?.settings?.isPrivateProfile) {
+    return { status: 'private', postId: String(post._id), ownerName, reason: 'profile' };
+  }
+
+  return { status: 'ok', post: post as SharePost };
+}
+
+/** @deprecated Prefer [loadPostForShare] — kept for older callers. */
+export async function loadPublicPostForShare(postId: string): Promise<SharePost | null> {
+  const result = await loadPostForShare(postId);
+  return result.status === 'ok' ? result.post : null;
+}
+
+export function privateShareCopy(
+  ownerName: string,
+  reason: 'profile' | 'event',
+): { eyebrow: string; title: string; body: string } {
+  if (reason === 'event') {
+    return {
+      eyebrow: 'Private event',
+      title: 'This event is private',
+      body: `Only ${ownerName} can view this event. Open Be Ther if you have access, or ask them to share a public link.`,
+    };
+  }
+  return {
+    eyebrow: 'Private profile',
+    title: 'This event is private',
+    body: `Only people who follow ${ownerName} can see their events in the Be Ther app. Open the app and follow them to view this event.`,
+  };
 }
 
 export function renderShareLandingPage(
@@ -208,26 +263,8 @@ export function renderShareLandingPage(
 </html>`;
 }
 
-/** Branded 404 for dead / private / invalid share links — same chrome as the live preview. */
-export function renderShareNotFoundPage(
-  env: Env,
-  opts?: { userAgent?: string },
-): string {
-  const homeUrl = shareWebBaseUrl(env) || 'https://be-ther.com';
-  const storeUrl = resolveStoreUrl(env, opts?.userAgent);
-  const androidStore = env.ANDROID_STORE_URL?.trim() || '#';
-  const iosStore = env.IOS_STORE_URL?.trim() || '#';
-  const logoUrl = `${homeUrl}/WhatsApp_Image_2026-06-28_at_22.46.20_(1).jpeg`;
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Event not found · Be Ther</title>
-  <meta name="description" content="This Be Ther event link is invalid or no longer available." />
-  <meta name="robots" content="noindex" />
-  <style>
+function shareShellStyles(): string {
+  return `
     :root { --cream:#f5f1e8; --navy:#1a2332; --coral:#d4745e; --muted:#c4bdb0; --radius:14px; --ink:#0f1419; }
     * { box-sizing: border-box; }
     body {
@@ -282,16 +319,11 @@ export function renderShareNotFoundPage(
       border-color: rgba(245,241,232,0.35);
     }
     .hint { margin-top: 18px; font-size: 0.82rem; color: #8a8378; line-height: 1.45; }
-  </style>
-</head>
-<body>
-  <main>
-    <a class="brand" href="${escapeHtml(homeUrl)}">
-      <img src="${escapeHtml(logoUrl)}" alt="" width="44" height="44" />
-      <span>Be Ther</span>
-    </a>
-    <div class="art" aria-hidden="true">
-      <svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+  `;
+}
+
+function shareCalendarArtSvg(): string {
+  return `<svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="14" y="22" width="68" height="58" rx="10" fill="#f5f1e8" stroke="#0f1419" stroke-width="3"/>
         <rect x="14" y="22" width="68" height="16" rx="10" fill="#d4745e" stroke="#0f1419" stroke-width="3"/>
         <rect x="14" y="30" width="68" height="8" fill="#d4745e"/>
@@ -303,22 +335,30 @@ export function renderShareNotFoundPage(
         <circle cx="48" cy="66" r="4" fill="#1a2332" opacity="0.15"/>
         <circle cx="68" cy="70" r="14" fill="#1a2332" stroke="#0f1419" stroke-width="3"/>
         <path d="M62 70h12M68 64v12" stroke="#f5f1e8" stroke-width="3" stroke-linecap="round"/>
-      </svg>
-    </div>
-    <p class="eyebrow">Unavailable</p>
-    <h1>This event isn’t here anymore</h1>
-    <p class="body">The link may be invalid, private, or the event was removed. Grab Be Ther and find what’s happening next.</p>
-    <div class="actions">
-      <a class="btn btn-primary" id="get-app" href="${escapeHtml(storeUrl)}">Get Be Ther</a>
-      <a class="btn btn-ghost" href="${escapeHtml(homeUrl)}">Back to Be Ther</a>
-    </div>
-    <p class="hint">On your phone, Get Be Ther opens the App Store or Play Store for your device.</p>
-  </main>
-  <script>
+      </svg>`;
+}
+
+function shareLockArtSvg(): string {
+  return `<svg viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="22" y="42" width="52" height="40" rx="10" fill="#f5f1e8" stroke="#0f1419" stroke-width="3"/>
+        <path d="M34 42v-8a14 14 0 0 1 28 0v8" stroke="#d4745e" stroke-width="3" stroke-linecap="round"/>
+        <circle cx="48" cy="60" r="5" fill="#1a2332"/>
+        <path d="M48 65v8" stroke="#1a2332" stroke-width="3" stroke-linecap="round"/>
+      </svg>`;
+}
+
+function storePickerScript(opts: {
+  storeUrl: string;
+  androidStore: string;
+  iosStore: string;
+  deepLink?: string;
+}): string {
+  return `<script>
     (function () {
-      var storeUrl = ${JSON.stringify(storeUrl)};
-      var androidStore = ${JSON.stringify(androidStore)};
-      var iosStore = ${JSON.stringify(iosStore)};
+      var storeUrl = ${JSON.stringify(opts.storeUrl)};
+      var androidStore = ${JSON.stringify(opts.androidStore)};
+      var iosStore = ${JSON.stringify(opts.iosStore)};
+      var deepLink = ${JSON.stringify(opts.deepLink ?? '')};
       function pickStore() {
         var ua = navigator.userAgent || '';
         if (/iPhone|iPad|iPod/i.test(ua)) return iosStore !== '#' ? iosStore : storeUrl;
@@ -326,16 +366,129 @@ export function renderShareNotFoundPage(
         return storeUrl;
       }
       var btn = document.getElementById('get-app');
-      if (!btn) return;
-      var url = pickStore();
-      if (url && url !== '#') {
-        btn.setAttribute('href', url);
-      } else {
-        btn.addEventListener('click', function (e) {
-          e.preventDefault();
-          alert('App store link coming soon. Visit be-ther.com to learn more.');
-        });
+      if (btn) {
+        var url = pickStore();
+        if (url && url !== '#') {
+          btn.setAttribute('href', url);
+        } else {
+          btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            alert('App store link coming soon. Visit be-ther.com to learn more.');
+          });
+        }
       }
+      if (!deepLink) return;
+      var isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+      if (!isMobile) return;
+      window.location.href = deepLink;
+    })();
+  </script>`;
+}
+
+/** Branded 404 for dead / invalid share links. */
+export function renderShareNotFoundPage(
+  env: Env,
+  opts?: { userAgent?: string },
+): string {
+  const homeUrl = shareWebBaseUrl(env) || 'https://be-ther.com';
+  const storeUrl = resolveStoreUrl(env, opts?.userAgent);
+  const androidStore = env.ANDROID_STORE_URL?.trim() || '#';
+  const iosStore = env.IOS_STORE_URL?.trim() || '#';
+  const logoUrl = `${homeUrl}/WhatsApp_Image_2026-06-28_at_22.46.20_(1).jpeg`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Event not found · Be Ther</title>
+  <meta name="description" content="This Be Ther event link is invalid or no longer available." />
+  <meta name="robots" content="noindex" />
+  <style>${shareShellStyles()}</style>
+</head>
+<body>
+  <main>
+    <a class="brand" href="${escapeHtml(homeUrl)}">
+      <img src="${escapeHtml(logoUrl)}" alt="" width="44" height="44" />
+      <span>Be Ther</span>
+    </a>
+    <div class="art" aria-hidden="true">${shareCalendarArtSvg()}</div>
+    <p class="eyebrow">Unavailable</p>
+    <h1>This event isn’t here anymore</h1>
+    <p class="body">This link is invalid or the event was removed. Grab Be Ther and find what’s happening next.</p>
+    <div class="actions">
+      <a class="btn btn-primary" id="get-app" href="${escapeHtml(storeUrl)}">Get Be Ther</a>
+      <a class="btn btn-ghost" href="${escapeHtml(homeUrl)}">Back to Be Ther</a>
+    </div>
+    <p class="hint">On your phone, Get Be Ther opens the App Store or Play Store for your device.</p>
+  </main>
+  ${storePickerScript({ storeUrl, androidStore, iosStore })}
+</body>
+</html>`;
+}
+
+/** Private profile / private event — clear copy, still tries to open the app. */
+export function renderSharePrivatePage(
+  env: Env,
+  input: {
+    postId: string;
+    ownerName: string;
+    reason: 'profile' | 'event';
+    userAgent?: string;
+  },
+): string {
+  const homeUrl = shareWebBaseUrl(env) || 'https://be-ther.com';
+  const storeUrl = resolveStoreUrl(env, input.userAgent);
+  const androidStore = env.ANDROID_STORE_URL?.trim() || '#';
+  const iosStore = env.IOS_STORE_URL?.trim() || '#';
+  const logoUrl = `${homeUrl}/WhatsApp_Image_2026-06-28_at_22.46.20_(1).jpeg`;
+  const appDeepLink = `bether://e/${input.postId}`;
+  const httpsDeepLink = `${homeUrl}/e/${input.postId}`;
+  const copy = privateShareCopy(input.ownerName, input.reason);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(copy.title)} · Be Ther</title>
+  <meta name="description" content="${escapeHtml(copy.body)}" />
+  <meta name="robots" content="noindex" />
+  <style>${shareShellStyles()}</style>
+</head>
+<body>
+  <main>
+    <a class="brand" href="${escapeHtml(homeUrl)}">
+      <img src="${escapeHtml(logoUrl)}" alt="" width="44" height="44" />
+      <span>Be Ther</span>
+    </a>
+    <div class="art" aria-hidden="true">${shareLockArtSvg()}</div>
+    <p class="eyebrow">${escapeHtml(copy.eyebrow)}</p>
+    <h1>${escapeHtml(copy.title)}</h1>
+    <p class="body">${escapeHtml(copy.body)}</p>
+    <div class="actions">
+      <a class="btn btn-primary" id="open-app" href="${escapeHtml(appDeepLink)}">Open in Be Ther</a>
+      <a class="btn btn-ghost" id="get-app" href="${escapeHtml(storeUrl)}">Get Be Ther</a>
+      <a class="btn btn-ghost" href="${escapeHtml(homeUrl)}">Back to Be Ther</a>
+    </div>
+    <p class="hint">Have the app? Open in Be Ther to follow ${escapeHtml(input.ownerName)} and view their events.</p>
+  </main>
+  ${storePickerScript({
+    storeUrl,
+    androidStore,
+    iosStore,
+    deepLink: appDeepLink,
+  })}
+  <script>
+    (function () {
+      var openBtn = document.getElementById('open-app');
+      if (!openBtn) return;
+      openBtn.addEventListener('click', function (e) {
+        // Prefer custom scheme; https App Link / Universal Link as fallback.
+        setTimeout(function () {
+          window.location.href = ${JSON.stringify(httpsDeepLink)};
+        }, 400);
+      });
     })();
   </script>
 </body>

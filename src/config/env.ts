@@ -38,6 +38,13 @@ const schema = z
     ANDROID_STORE_URL: z.string().optional(),
     IOS_STORE_URL: z.string().optional(),
     /**
+     * Comma-separated SHA-256 cert fingerprints for Android App Links
+     * (`/.well-known/assetlinks.json`). Play App Signing + upload key.
+     */
+    ANDROID_SHA256_CERT_FINGERPRINTS: z.string().optional(),
+    /** Apple Developer Team ID for Universal Links (`apple-app-site-association`). */
+    IOS_TEAM_ID: z.string().optional(),
+    /**
      * Shared secret for POST /api/v1/internal/nudge-tick (VPS cron).
      * When set, enables external runner without keeping a busy loop — still needs API up.
      */

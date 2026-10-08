@@ -21,6 +21,7 @@ import { onCalendarStatusChanged } from '../../services/event-nudge.service.js';
 import { UserModel } from '../../models/user.model.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
 import { isPostEventPast } from '../../utils/event-date.js';
+import { resolvePostAuthorId } from '../../utils/post-author-id.js';
 import { canViewerSeePost, postsVisibleToViewerFilter } from '../../utils/post-visibility.js';
 import { withRouteTiming } from '../../utils/route-timing.js';
 import { searchPosts } from '../../services/search.service.js';
@@ -51,9 +52,55 @@ function mapCommentAuthor(author: PopulatedCommentAuthor | Types.ObjectId | null
 async function assertCanViewPost(
   post: { authorId: unknown; isPrivate?: boolean },
   viewerId: string,
-): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+): Promise<
+  | { ok: true }
+  | {
+      ok: false;
+      status: number;
+      message: string;
+      code: 'PRIVATE_EVENT' | 'PRIVATE_PROFILE' | 'FORBIDDEN';
+      ownerName?: string;
+      ownerUsername?: string;
+    }
+> {
   if (await canViewerSeePost(post, viewerId)) return { ok: true };
-  return { ok: false, status: 403, message: 'This event is not visible to you' };
+
+  const authorId = resolvePostAuthorId(post.authorId);
+  const author = authorId
+    ? await UserModel.findById(authorId)
+        .select('username displayName settings.isPrivateProfile')
+        .lean()
+    : null;
+  const ownerUsername = (author?.username ?? '').trim() || undefined;
+  const ownerName =
+    (author?.displayName ?? '').trim() || ownerUsername || 'This user';
+
+  if (post.isPrivate) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'PRIVATE_EVENT',
+      ownerName,
+      ownerUsername,
+      message: `This is a private event. Only ${ownerName} can view it.`,
+    };
+  }
+  if (author?.settings?.isPrivateProfile) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'PRIVATE_PROFILE',
+      ownerName,
+      ownerUsername,
+      message: `This event is private. Only people who follow ${ownerName} can see it in the app.`,
+    };
+  }
+  return {
+    ok: false,
+    status: 403,
+    code: 'FORBIDDEN',
+    message: 'This event is not visible to you',
+  };
 }
 
 const captionSchema = z
@@ -193,7 +240,15 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
 
       const access = await assertCanViewPost(post, userId);
       if (!access.ok) {
-        return reply.status(access.status).send({ ok: false, error: { message: access.message } });
+        return reply.status(access.status).send({
+          ok: false,
+          error: {
+            message: access.message,
+            code: access.code,
+            ownerName: access.ownerName,
+            ownerUsername: access.ownerUsername,
+          },
+        });
       }
 
       const populated = await PostModel.findById(postId)

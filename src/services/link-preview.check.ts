@@ -9,7 +9,10 @@ import {
   cleanMetaText,
   cleanTicketTitle,
   extractDescription,
+  extractEventDateTime,
   extractTitle,
+  extractVenueQuery,
+  filterUpcomingDateTime,
   isJunkPreviewImage,
   pickBestImageUrl,
 } from './link-preview.service.js';
@@ -61,6 +64,36 @@ assert.equal(
 assert.equal(
   bookMyShowMobileBannerUrl(new URL('https://example.com/events/ET00454054')),
   null,
+);
+
+const bmsUrl = new URL(
+  'https://in.bookmyshow.com/events/threeory-band-live-at-akan-july-19/ET00454054',
+);
+assert.equal(
+  extractVenueQuery(
+    'Book online tickets happening at Akan: Hyderabad on BookMyShow',
+    bmsUrl,
+  ),
+  'Akan Hyderabad',
+);
+assert.equal(
+  extractVenueQuery(
+    'Threeory Band takes the stage at AKAN Hyderabad. Known for their dynamic',
+    bmsUrl,
+  ),
+  'AKAN Hyderabad',
+);
+assert.equal(
+  extractEventDateTime('Sun 11 Oct 2026 calendar.png something')?.date,
+  '2026-10-11',
+);
+assert.equal(
+  filterUpcomingDateTime('2020-01-01', '20:00', new Date('2026-10-08T12:00:00Z')),
+  null,
+);
+assert.deepEqual(
+  filterUpcomingDateTime('2026-10-11', '18:30', new Date('2026-10-08T12:00:00Z')),
+  { date: '2026-10-11', time: '18:30' },
 );
 
 console.log('link-preview.check: ok');

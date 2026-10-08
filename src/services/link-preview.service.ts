@@ -1,5 +1,12 @@
 import { spawn } from 'node:child_process';
 
+import type { Env } from '../config/env.js';
+import {
+  autocompletePlaces,
+  getPlaceDetails,
+  type StructuredPlace,
+} from './places.service.js';
+
 const HTML_TIMEOUT_MS = 12_000;
 const MAX_HTML_BYTES = 768_000;
 
@@ -24,6 +31,14 @@ export type LinkPreviewResult = {
   imageUrl: string | null;
   title: string | null;
   description: string | null;
+  /** Search string used to resolve Google Place (debug / soft UI). */
+  venueQuery: string | null;
+  /** Resolved venue with lat/lng — null when Places fails or query missing. */
+  place: StructuredPlace | null;
+  /** Upcoming event day `YYYY-MM-DD`, or null if unknown / already past. */
+  date: string | null;
+  /** `HH:mm` 24h when found and not already past; else null. */
+  time: string | null;
 };
 
 function normalizeInputUrl(raw: string): URL | null {
@@ -209,6 +224,8 @@ export function cleanTicketTitle(value: string | null | undefined): string | nul
     cleanMetaText(
       value
         .replace(/\s*[-–|]\s*BookMyShow\s*$/i, '')
+        .replace(/\s*,\s*Club Gigs\b.*$/i, '')
+        .replace(/\s+Music Shows\b.*$/i, '')
         .replace(/\s+music-shows\b.*$/i, '')
         .replace(/\s+Events?\s+Tickets?\b.*$/i, '')
         .replace(/\s+Event Tickets\b.*$/i, ''),
@@ -496,11 +513,13 @@ function parseJinaMarkdown(text: string): PartialPreview {
   return { title, description, imageUrl };
 }
 
+type JinaFetchResult = { preview: PartialPreview; text: string };
+
 /**
  * Jina reader fallback — returns markdown with Title + CDN images even when
  * CF blocks us. Retries once: free tier occasionally 403s under burst load.
  */
-async function fetchViaJina(pageUrl: string): Promise<PartialPreview | null> {
+async function fetchViaJina(pageUrl: string): Promise<JinaFetchResult | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) {
       await new Promise((r) => setTimeout(r, 600));
@@ -521,7 +540,7 @@ async function fetchViaJina(pageUrl: string): Promise<PartialPreview | null> {
       const text = await res.text();
       if (!text || isCloudflareChallenge(text, res.status)) continue;
       const parsed = parseJinaMarkdown(text);
-      if (previewIsUseful(parsed)) return parsed;
+      if (previewIsUseful(parsed)) return { preview: parsed, text };
     } catch {
       /* retry / give up */
     } finally {
@@ -529,6 +548,282 @@ async function fetchViaJina(pageUrl: string): Promise<PartialPreview | null> {
     }
   }
   return null;
+}
+
+const MONTH_INDEX: Record<string, number> = {
+  jan: 0,
+  january: 0,
+  feb: 1,
+  february: 1,
+  mar: 2,
+  march: 2,
+  apr: 3,
+  april: 3,
+  may: 4,
+  jun: 5,
+  june: 5,
+  jul: 6,
+  july: 6,
+  aug: 7,
+  august: 7,
+  sep: 8,
+  sept: 8,
+  september: 8,
+  oct: 9,
+  october: 9,
+  nov: 10,
+  november: 10,
+  dec: 11,
+  december: 11,
+};
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+
+/** Calendar day in Asia/Kolkata as `YYYY-MM-DD` (ticket sites are India-centric). */
+export function todayYmdIst(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+function ymdFromParts(year: number, monthIndex: number, day: number): string | null {
+  if (!Number.isFinite(year) || !Number.isFinite(day) || monthIndex < 0 || monthIndex > 11) {
+    return null;
+  }
+  if (day < 1 || day > 31 || year < 2020 || year > 2100) return null;
+  const dt = new Date(Date.UTC(year, monthIndex, day));
+  if (
+    dt.getUTCFullYear() !== year ||
+    dt.getUTCMonth() !== monthIndex ||
+    dt.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${year}-${pad2(monthIndex + 1)}-${pad2(day)}`;
+}
+
+/** Parse `HH:mm` from 12h/24h snippets near a date mention. */
+export function parseEventTime(raw: string): string | null {
+  const withMinutes = /\b(\d{1,2}):(\d{2})\s*(am|pm)?\b/i.exec(raw);
+  if (withMinutes) {
+    let hour = Number(withMinutes[1]);
+    const minute = Number(withMinutes[2]);
+    const ampm = (withMinutes[3] ?? '').toLowerCase();
+    if (Number.isNaN(hour) || Number.isNaN(minute) || minute > 59) return null;
+    if (ampm === 'pm' && hour < 12) hour += 12;
+    if (ampm === 'am' && hour === 12) hour = 0;
+    if (!ampm && hour > 23) return null;
+    if (ampm && (hour < 0 || hour > 23)) return null;
+    return `${pad2(hour)}:${pad2(minute)}`;
+  }
+  const hourOnly = /\b(\d{1,2})\s*(am|pm)\b/i.exec(raw);
+  if (!hourOnly?.[1] || !hourOnly[2]) return null;
+  let hour = Number(hourOnly[1]);
+  const ampm = hourOnly[2].toLowerCase();
+  if (Number.isNaN(hour) || hour < 1 || hour > 12) return null;
+  if (ampm === 'pm' && hour < 12) hour += 12;
+  if (ampm === 'am' && hour === 12) hour = 0;
+  return `${pad2(hour)}:00`;
+}
+
+/**
+ * Prefer page calendar dates ("Sun 11 Oct 2026") over stale URL slugs ("july-19").
+ * Returns null when the day is already past (IST).
+ */
+export function extractEventDateTime(
+  corpus: string,
+): { date: string; time: string | null } | null {
+  const text = scrubPlainText(corpus);
+  const monthAlt = Object.keys(MONTH_INDEX).join('|');
+  const withDow = new RegExp(
+    String.raw`(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*\s+(\d{1,2})\s+(${monthAlt})\s+(\d{4})\b`,
+    'i',
+  );
+  const plain = new RegExp(
+    String.raw`\b(\d{1,2})\s+(${monthAlt})\s+(\d{4})\b`,
+    'i',
+  );
+  const iso = /\b(20\d{2})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2}))?/;
+
+  let date: string | null = null;
+  let dateIndex = -1;
+
+  for (const re of [withDow, plain]) {
+    const m = re.exec(text);
+    if (!m?.[1] || !m[2] || !m[3]) continue;
+    const day = Number(m[1]);
+    const monthIndex = MONTH_INDEX[m[2].toLowerCase()];
+    const year = Number(m[3]);
+    if (monthIndex === undefined) continue;
+    date = ymdFromParts(year, monthIndex, day);
+    dateIndex = m.index;
+    if (date) break;
+  }
+
+  if (!date) {
+    const m = iso.exec(text);
+    if (m?.[1] && m[2] && m[3]) {
+      date = `${m[1]}-${m[2]}-${m[3]}`;
+      dateIndex = m.index;
+      if (m[4] && m[5]) {
+        const time = `${m[4]}:${m[5]}`;
+        return filterUpcomingDateTime(date, time);
+      }
+    }
+  }
+
+  if (!date) return null;
+
+  let time: string | null = null;
+  if (dateIndex >= 0) {
+    const window = text.slice(
+      Math.max(0, dateIndex - 80),
+      Math.min(text.length, dateIndex + 160),
+    );
+    time = parseEventTime(window);
+  }
+
+  return filterUpcomingDateTime(date, time);
+}
+
+/** Drop past calendar days; if today + past clock time, keep date and drop time. */
+export function filterUpcomingDateTime(
+  date: string,
+  time: string | null,
+  now = new Date(),
+): { date: string; time: string | null } | null {
+  const today = todayYmdIst(now);
+  if (date < today) return null;
+  if (!time || date > today) return { date, time };
+
+  // Same day — require time still in the future (IST clock).
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(now);
+  const hh = parts.find((p) => p.type === 'hour')?.value ?? '00';
+  const mm = parts.find((p) => p.type === 'minute')?.value ?? '00';
+  const nowHm = `${hh}:${mm}`;
+  if (time <= nowHm) return { date, time: null };
+  return { date, time };
+}
+
+function scrubPlainText(corpus: string): string {
+  return corpus
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/["']+/g, ' ')
+    // Keep newlines so venue/title lines don't glue together.
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\n{2,}/g, '\n');
+}
+
+function tidyVenueQuery(raw: string): string | null {
+  const q = cleanMetaText(
+    raw
+      .replace(/\s+on\s+BookMyShow\b.*$/i, '')
+      .replace(/\s+which is\b.*$/i, '')
+      .replace(/\s+music-shows\b.*$/i, '')
+      .replace(/:/g, ' ')
+      .replace(/[^A-Za-z0-9 &.',-]/g, ' '),
+    80,
+  );
+  if (!q || q.length < 3) return null;
+  // Reject HTML/meta leftovers that slipped through.
+  if (/content=|keywords|og:|http|www\./i.test(q)) return null;
+  return q.replace(/\s+/g, ' ').trim();
+}
+
+/** Venue search string from ticket copy / URL (e.g. "Akan Hyderabad"). */
+export function extractVenueQuery(corpus: string, pageUrl: URL): string | null {
+  const text = scrubPlainText(corpus);
+  // Keep venue/city tokens on one line — `\s` must not span newlines into titles.
+  const patterns: RegExp[] = [
+    // "happening at Akan: Hyderabad"
+    /happening at[ \t]+([A-Za-z0-9 &.'-]{2,40}?)[ \t]*:[ \t]*([A-Za-z][A-Za-z -]{1,40})\b/i,
+    /happening at[ \t]+([A-Za-z][A-Za-z0-9 &.'-]{2,50}?)(?=[ \t]+on\b|[ \t]+which\b|\.|$)/i,
+    /takes the stage at[ \t]+([A-Za-z][A-Za-z0-9 &.'-]{2,50}?)(?=[ \t]+on\b|[ \t]+which\b|\.|$)/i,
+    /(?:venue|location)[ \t]*[:|-][ \t]*([A-Za-z][A-Za-z0-9 &.',-]{2,60})/i,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(text);
+    if (!m?.[1]) continue;
+    const raw = m[2] ? `${m[1]} ${m[2]}` : m[1];
+    const q = tidyVenueQuery(raw);
+    if (q && q.split(' ').length <= 6) return q;
+  }
+
+  // BookMyShow book-now path often embeds a venue code: /ticket/AKAN/10750
+  const ticketVenue = /\/ticket\/([A-Z][A-Z0-9]{2,12})\//i.exec(corpus);
+  if (ticketVenue?.[1]) {
+    const city =
+      /\bin[ \t]+([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?)\b/.exec(text)?.[1] ?? null;
+    const code = ticketVenue[1].replace(/[-_]/g, ' ');
+    const q = tidyVenueQuery(city ? `${code} ${city}` : code);
+    if (q && q.split(' ').length >= 2) return q;
+  }
+
+  // Slug alone ("akan") is too weak for Places — require a city from copy.
+  const slug = /\/events\/([^/]+)\//i.exec(pageUrl.pathname)?.[1];
+  if (slug) {
+    const at = /-at-([a-z0-9-]+?)(?:-january|-february|-march|-april|-may|-june|-july|-august|-september|-october|-november|-december|-\d|$)/i.exec(
+      slug,
+    );
+    const city =
+      /\bin[ \t]+([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)?)\b/.exec(text)?.[1] ?? null;
+    if (at?.[1] && city) {
+      const q = tidyVenueQuery(`${at[1].replace(/-/g, ' ')} ${city}`);
+      if (q) return q;
+    }
+  }
+
+  return null;
+}
+
+async function resolveVenuePlace(
+  env: Env | undefined,
+  query: string,
+  pageUrl: URL,
+): Promise<StructuredPlace | null> {
+  if (!env?.GOOGLE_PLACES_API_KEY?.trim()) return null;
+  let q = query.trim();
+  if (q.length < 3) return null;
+  // BookMyShow / Indian ticket hosts — bias autocomplete to India.
+  const host = pageUrl.hostname.toLowerCase();
+  const indiaHost =
+    host.includes('bookmyshow.') ||
+    host.endsWith('bms.co.in') ||
+    host.includes('district.in');
+  if (indiaHost && !/\bindia\b/i.test(q)) {
+    q = `${q} India`;
+  }
+  // Hyderabad ~ center bias when city is named (reduces foreign false matches).
+  let lat: number | undefined;
+  let lng: number | undefined;
+  if (/\bhyderabad\b/i.test(q)) {
+    lat = 17.385;
+    lng = 78.4867;
+  } else if (indiaHost) {
+    lat = 20.5937;
+    lng = 78.9629;
+  }
+  try {
+    const suggestions = await autocompletePlaces(env, { query: q, lat, lng });
+    const first = suggestions[0];
+    if (!first?.placeId) return null;
+    return await getPlaceDetails(env, { placeId: first.placeId });
+  } catch {
+    return null;
+  }
 }
 
 function needsUsableCover(p: PartialPreview | null): boolean {
@@ -578,8 +873,12 @@ async function urlLooksLikeImage(url: string): Promise<boolean> {
  * Direct fetch often fails on Cloudflare-protected ticket sites (BookMyShow):
  * WhatsApp works because Meta's crawler IPs are allowlisted — ours are not.
  * Fallback chain: direct HTML → Microlink meta → Jina reader → Microlink screenshot.
+ * Then extract venue/date/time and resolve place via Google Places when configured.
  */
-export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResult> {
+export async function fetchLinkPreview(
+  rawUrl: string,
+  env?: Env,
+): Promise<LinkPreviewResult> {
   const pageUrl = normalizeInputUrl(rawUrl);
   if (!pageUrl || !isSafePublicUrl(pageUrl)) {
     throw Object.assign(new Error('Invalid or unsupported URL'), { statusCode: 400 });
@@ -591,10 +890,16 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
     imageUrl: null,
     title: null,
     description: null,
+    venueQuery: null,
+    place: null,
+    date: null,
+    time: null,
   };
 
   try {
     let merged: PartialPreview | null = null;
+    let metaCorpus = '';
+    let hadJinaText = false;
 
     const html = await loadPageHtml(canonical);
     if (html) {
@@ -603,6 +908,7 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
         title: extractTitle(html),
         description: extractDescription(html),
       };
+      metaCorpus += `\n${html.slice(0, 120_000)}`;
     }
 
     // CF blocked us, or page only gave a junk share icon / no title.
@@ -618,7 +924,11 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
         fetchViaMicrolink(canonical, false),
         fetchViaJina(canonical),
       ]);
-      merged = mergePreview(merged, mergePreview(micro, jina));
+      merged = mergePreview(merged, mergePreview(micro, jina?.preview ?? null));
+      if (jina?.text) {
+        metaCorpus += `\n${jina.text}`;
+        hadJinaText = true;
+      }
     }
 
     // BMS: CDN mobile poster from event code (ET…) — reliable when CF blocks HTML
@@ -641,11 +951,40 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
       if (shot) merged = mergePreview(merged, shot);
     }
 
+    // OG may succeed without Jina — still need page text for venue/date.
+    if (!hadJinaText) {
+      const probe = `${metaCorpus}\n${merged?.title ?? ''}\n${merged?.description ?? ''}`;
+      const needMeta =
+        !extractVenueQuery(probe, pageUrl) || !extractEventDateTime(probe);
+      if (needMeta) {
+        const jinaOnly = await fetchViaJina(canonical);
+        if (jinaOnly?.text) {
+          metaCorpus += `\n${jinaOnly.text}`;
+          if (!previewIsUseful(merged)) {
+            merged = mergePreview(merged, jinaOnly.preview);
+          }
+        }
+      }
+    }
+
     if (!merged || !previewIsUseful(merged)) {
       return empty;
     }
 
     const result = merged;
+    metaCorpus += `\n${result.title ?? ''}\n${result.description ?? ''}\n${canonical}`;
+
+    // Prefer description alone for venue — titles glue into city names after scrub.
+    const venueQuery =
+      extractVenueQuery(result.description ?? '', pageUrl) ??
+      extractVenueQuery(metaCorpus.slice(0, 20_000), pageUrl);
+    const when =
+      extractEventDateTime(metaCorpus) ??
+      extractEventDateTime(`${result.description ?? ''}\n${canonical}`);
+    const place = venueQuery
+      ? await resolveVenuePlace(env, venueQuery, pageUrl)
+      : null;
+
     return {
       url: canonical,
       imageUrl: pickBestImageUrl(
@@ -653,6 +992,10 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
       ),
       title: cleanTicketTitle(result.title) ?? result.title,
       description: result.description,
+      venueQuery,
+      place,
+      date: when?.date ?? null,
+      time: when?.time ?? null,
     };
   } catch (err) {
     if ((err as { name?: string })?.name === 'AbortError') {
