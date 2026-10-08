@@ -11,6 +11,14 @@ const BROWSER_UA =
 const SOCIAL_UA =
   'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
 
+const WHATSAPP_UA = 'WhatsApp/2.23.20.0 A';
+
+/** Free Microlink endpoint — used when Cloudflare blocks our direct fetch. */
+const MICROLINK_ENDPOINT = 'https://api.microlink.io/';
+
+/** Jina reader — second fallback when Microlink is rate-limited or thin. */
+const JINA_READER_PREFIX = 'https://r.jina.ai/';
+
 export type LinkPreviewResult = {
   url: string;
   imageUrl: string | null;
@@ -128,8 +136,36 @@ function imageFromPageMetaJson(html: string): string | null {
   return value || null;
 }
 
+/**
+ * BookMyShow often lists a tiny share icon (share_v2.png) as og:image before
+ * the real event banner. WhatsApp may pick a better asset; we score explicitly.
+ */
+export function isJunkPreviewImage(url: string): boolean {
+  const u = url.toLowerCase();
+  if (u.endsWith('.svg')) return true;
+  if (u.includes('share_v2')) return true;
+  if (u.includes('like_icon') || u.includes('interested_')) return true;
+  if (u.includes('/synopsis/') && /icon|chevron|calendar|mticket|time\.png|duration|language|genre|location\.png|navigate/i.test(u)) {
+    return true;
+  }
+  return false;
+}
+
+export function pickBestImageUrl(candidates: string[]): string | null {
+  const usable = candidates.filter((c) => c && !isJunkPreviewImage(c));
+  if (usable.length === 0) return null;
+  const banners = usable.filter(
+    (c) =>
+      /\/events\/banner\//i.test(c) ||
+      /\/nmcms\/events\//i.test(c) ||
+      /\/Events\/Mobile\//i.test(c) ||
+      /media-(desktop|mobile)-/i.test(c),
+  );
+  return banners[0] ?? usable[0] ?? null;
+}
+
 function extractImageUrl(html: string, pageUrl: URL): string | null {
-  const candidates = [
+  const raw = [
     ...collectMetaContents(html, 'property', 'og:image'),
     ...collectMetaContents(html, 'property', 'og:image:secure_url'),
     ...collectMetaContents(html, 'name', 'twitter:image'),
@@ -137,21 +173,22 @@ function extractImageUrl(html: string, pageUrl: URL): string | null {
     ...collectMetaContents(html, 'property', 'twitter:image'),
   ];
   const fromJson = imageFromPageMetaJson(html);
-  if (fromJson) candidates.push(fromJson);
+  if (fromJson) raw.push(fromJson);
 
-  for (const candidate of candidates) {
+  const absolute: string[] = [];
+  for (const candidate of raw) {
     try {
-      const absolute = new URL(candidate, pageUrl);
-      if (absolute.protocol !== 'http:' && absolute.protocol !== 'https:') {
+      const resolved = new URL(candidate, pageUrl);
+      if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
         continue;
       }
-      if (!isSafePublicUrl(absolute)) continue;
-      return absolute.toString();
+      if (!isSafePublicUrl(resolved)) continue;
+      absolute.push(resolved.toString());
     } catch {
       /* ignore */
     }
   }
-  return null;
+  return pickBestImageUrl(absolute);
 }
 
 /** Collapse whitespace and cap length for form fields. */
@@ -163,6 +200,21 @@ export function cleanMetaText(value: string, maxLen: number): string | null {
   const lastSpace = cut.lastIndexOf(' ');
   const base = lastSpace > Math.floor(maxLen * 0.5) ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}…`;
+}
+
+/** Strip ticket-site SEO suffixes ("… music-shows Event Tickets … - BookMyShow"). */
+export function cleanTicketTitle(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return (
+    cleanMetaText(
+      value
+        .replace(/\s*[-–|]\s*BookMyShow\s*$/i, '')
+        .replace(/\s+music-shows\b.*$/i, '')
+        .replace(/\s+Events?\s+Tickets?\b.*$/i, '')
+        .replace(/\s+Event Tickets\b.*$/i, ''),
+      200,
+    ) ?? null
+  );
 }
 
 export function extractTitle(html: string): string | null {
@@ -177,7 +229,7 @@ export function extractTitle(html: string): string | null {
   }
   // Event name field max is 200 on the client.
   for (const raw of titles) {
-    const cleaned = cleanMetaText(raw, 200);
+    const cleaned = cleanTicketTitle(raw) ?? cleanMetaText(raw, 200);
     if (cleaned) return cleaned;
   }
   return null;
@@ -316,7 +368,7 @@ function fetchHtmlViaCurl(pageUrl: string, userAgent: string): Promise<string | 
 
 async function loadPageHtml(pageUrl: string): Promise<string | null> {
   // 1) Prefer social crawler UA via Node (works on some hosts).
-  for (const ua of [SOCIAL_UA, BROWSER_UA]) {
+  for (const ua of [WHATSAPP_UA, SOCIAL_UA, BROWSER_UA]) {
     const viaNode = await fetchHtmlViaNode(pageUrl, ua);
     if (
       viaNode &&
@@ -329,8 +381,8 @@ async function loadPageHtml(pageUrl: string): Promise<string | null> {
     }
   }
 
-  // 2) Curl fallback — different TLS fingerprint; works for BookMyShow/CF.
-  for (const ua of [SOCIAL_UA, BROWSER_UA]) {
+  // 2) Curl fallback — different TLS fingerprint; sometimes bypasses light CF.
+  for (const ua of [WHATSAPP_UA, SOCIAL_UA, BROWSER_UA]) {
     const viaCurl = await fetchHtmlViaCurl(pageUrl, ua);
     if (viaCurl) return viaCurl;
   }
@@ -338,10 +390,194 @@ async function loadPageHtml(pageUrl: string): Promise<string | null> {
   return null;
 }
 
+type PartialPreview = {
+  imageUrl: string | null;
+  title: string | null;
+  description: string | null;
+};
+
+function previewIsUseful(p: PartialPreview | null): boolean {
+  if (!p) return false;
+  return Boolean(p.title || p.description || p.imageUrl);
+}
+
+function mergePreview(
+  base: PartialPreview | null,
+  extra: PartialPreview | null,
+): PartialPreview {
+  const images = [base?.imageUrl, extra?.imageUrl].filter(
+    (u): u is string => Boolean(u),
+  );
+  return {
+    title: base?.title ?? extra?.title ?? null,
+    description: base?.description ?? extra?.description ?? null,
+    imageUrl: pickBestImageUrl(images),
+  };
+}
+
+function microlinkImageUrl(
+  image: { url?: string } | string | null | undefined,
+): string | null {
+  if (typeof image === 'string') return image || null;
+  if (image && typeof image === 'object') return image.url ?? null;
+  return null;
+}
+
+/**
+ * Microlink free API — Meta/WhatsApp-class crawlers are allowlisted by CF;
+ * our VPS/dev IP is not. Microlink fetches from their edge instead.
+ *
+ * When `wantScreenshot` is true, also request a page screenshot — used only
+ * as a last-resort cover when OG image is a junk share icon (BookMyShow).
+ */
+async function fetchViaMicrolink(
+  pageUrl: string,
+  wantScreenshot = false,
+): Promise<PartialPreview | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTML_TIMEOUT_MS + (wantScreenshot ? 8_000 : 0));
+  try {
+    const api = new URL(MICROLINK_ENDPOINT);
+    api.searchParams.set('url', pageUrl);
+    if (wantScreenshot) api.searchParams.set('screenshot', 'true');
+    const res = await fetch(api.toString(), {
+      method: 'GET',
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      status?: string;
+      data?: {
+        title?: string;
+        description?: string;
+        image?: { url?: string } | string | null;
+        screenshot?: { url?: string } | string | null;
+      };
+    };
+    if (json.status !== 'success' || !json.data) return null;
+
+    const ogImage = microlinkImageUrl(json.data.image);
+    const shot = microlinkImageUrl(json.data.screenshot);
+    // Prefer real OG assets; screenshot only when OG is missing/junk.
+    const imageUrl = pickBestImageUrl(
+      [ogImage, wantScreenshot ? shot : null].filter((u): u is string => Boolean(u)),
+    );
+
+    return {
+      title: cleanTicketTitle(json.data.title ?? ''),
+      description: cleanMetaText(json.data.description ?? '', 500),
+      imageUrl,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseJinaMarkdown(text: string): PartialPreview {
+  const titleLine = /^Title:\s*(.+)$/m.exec(text)?.[1] ?? null;
+  const title = cleanTicketTitle(titleLine);
+
+  const imageMatches = [
+    ...text.matchAll(/!\[[^\]]*\]\((https?:\/\/[^)\s]+)\)/g),
+  ]
+    .map((m) => m[1])
+    .filter((u): u is string => Boolean(u));
+  const imageUrl = pickBestImageUrl(imageMatches);
+
+  let description: string | null = null;
+  const para = text.match(
+    /(?:^|\n)((?:Experience|Join|Book|Enjoy|Witness)[^\n]{80,480})/i,
+  );
+  if (para?.[1]) description = cleanMetaText(para[1], 500);
+
+  return { title, description, imageUrl };
+}
+
+/**
+ * Jina reader fallback — returns markdown with Title + CDN images even when
+ * CF blocks us. Retries once: free tier occasionally 403s under burst load.
+ */
+async function fetchViaJina(pageUrl: string): Promise<PartialPreview | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 600));
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HTML_TIMEOUT_MS + 5_000);
+    try {
+      const res = await fetch(`${JINA_READER_PREFIX}${pageUrl}`, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: {
+          Accept: 'text/plain',
+          'X-Return-Format': 'markdown',
+          'User-Agent': BROWSER_UA,
+        },
+      });
+      if (!res.ok) continue;
+      const text = await res.text();
+      if (!text || isCloudflareChallenge(text, res.status)) continue;
+      const parsed = parseJinaMarkdown(text);
+      if (previewIsUseful(parsed)) return parsed;
+    } catch {
+      /* retry / give up */
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+function needsUsableCover(p: PartialPreview | null): boolean {
+  return !p?.imageUrl || isJunkPreviewImage(p.imageUrl);
+}
+
+/**
+ * BookMyShow serves a stable mobile poster at
+ * `https://in.bmscdn.com/Events/Mobile/{ET…}.jpg` — no Cloudflare on the CDN.
+ * WhatsApp often ends up with this (or the desktop banner); we use it when OG
+ * only exposes the junk share_v2 icon.
+ */
+export function bookMyShowMobileBannerUrl(pageUrl: URL): string | null {
+  const host = pageUrl.hostname.toLowerCase();
+  if (!host.includes('bookmyshow.') && !host.endsWith('bms.co.in')) return null;
+  const match = /\/(ET\d{5,})\b/i.exec(pageUrl.pathname);
+  if (!match?.[1]) return null;
+  return `https://in.bmscdn.com/Events/Mobile/${match[1].toUpperCase()}.jpg`;
+}
+
+/** Confirm CDN asset exists before using it as cover. */
+async function urlLooksLikeImage(url: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    if (!res.ok) return false;
+    const type = (res.headers.get('content-type') ?? '').toLowerCase();
+    if (type.startsWith('image/')) return true;
+    // Some CDNs omit content-type on HEAD — accept non-tiny bodies.
+    const len = Number(res.headers.get('content-length') ?? '0');
+    return Number.isFinite(len) && len > 2_000;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Server-side link preview (WhatsApp architecture).
- * Phone scrapes fail on Cloudflare-protected ticket sites; Meta's servers
- * (and our API + curl) fetch the HTML instead.
+ *
+ * Direct fetch often fails on Cloudflare-protected ticket sites (BookMyShow):
+ * WhatsApp works because Meta's crawler IPs are allowlisted — ours are not.
+ * Fallback chain: direct HTML → Microlink meta → Jina reader → Microlink screenshot.
  */
 export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResult> {
   const pageUrl = normalizeInputUrl(rawUrl);
@@ -349,22 +585,74 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
     throw Object.assign(new Error('Invalid or unsupported URL'), { statusCode: 400 });
   }
 
+  const canonical = pageUrl.toString();
+  const empty: LinkPreviewResult = {
+    url: canonical,
+    imageUrl: null,
+    title: null,
+    description: null,
+  };
+
   try {
-    const html = await loadPageHtml(pageUrl.toString());
-    if (!html) {
-      return {
-        url: pageUrl.toString(),
-        imageUrl: null,
-        title: null,
-        description: null,
+    let merged: PartialPreview | null = null;
+
+    const html = await loadPageHtml(canonical);
+    if (html) {
+      merged = {
+        imageUrl: extractImageUrl(html, pageUrl),
+        title: extractTitle(html),
+        description: extractDescription(html),
       };
     }
 
+    // CF blocked us, or page only gave a junk share icon / no title.
+    // Run Microlink + Jina in parallel — Jina usually has the real banner;
+    // Microlink is stronger on title/description when Jina rate-limits.
+    const needsFallback =
+      !merged ||
+      !merged.title ||
+      needsUsableCover(merged);
+
+    if (needsFallback) {
+      const [micro, jina] = await Promise.all([
+        fetchViaMicrolink(canonical, false),
+        fetchViaJina(canonical),
+      ]);
+      merged = mergePreview(merged, mergePreview(micro, jina));
+    }
+
+    // BMS: CDN mobile poster from event code (ET…) — reliable when CF blocks HTML
+    // and Microlink/Jina only see share_v2.png.
+    if (needsUsableCover(merged)) {
+      const bmsBanner = bookMyShowMobileBannerUrl(pageUrl);
+      if (bmsBanner && (await urlLooksLikeImage(bmsBanner))) {
+        merged = mergePreview(merged, {
+          title: null,
+          description: null,
+          imageUrl: bmsBanner,
+        });
+      }
+    }
+
+    // Last resort: full-page screenshot so the post still gets a cover
+    // when OG is only share_v2.png and Jina was rate-limited.
+    if (needsUsableCover(merged)) {
+      const shot = await fetchViaMicrolink(canonical, true);
+      if (shot) merged = mergePreview(merged, shot);
+    }
+
+    if (!merged || !previewIsUseful(merged)) {
+      return empty;
+    }
+
+    const result = merged;
     return {
-      url: pageUrl.toString(),
-      imageUrl: extractImageUrl(html, pageUrl),
-      title: extractTitle(html),
-      description: extractDescription(html),
+      url: canonical,
+      imageUrl: pickBestImageUrl(
+        [result.imageUrl].filter((u): u is string => Boolean(u)),
+      ),
+      title: cleanTicketTitle(result.title) ?? result.title,
+      description: result.description,
     };
   } catch (err) {
     if ((err as { name?: string })?.name === 'AbortError') {
