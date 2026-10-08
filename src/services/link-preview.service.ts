@@ -15,6 +15,7 @@ export type LinkPreviewResult = {
   url: string;
   imageUrl: string | null;
   title: string | null;
+  description: string | null;
 };
 
 function normalizeInputUrl(raw: string): URL | null {
@@ -153,12 +154,47 @@ function extractImageUrl(html: string, pageUrl: URL): string | null {
   return null;
 }
 
-function extractTitle(html: string): string | null {
+/** Collapse whitespace and cap length for form fields. */
+export function cleanMetaText(value: string, maxLen: number): string | null {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= maxLen) return cleaned;
+  const cut = cleaned.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  const base = lastSpace > Math.floor(maxLen * 0.5) ? cut.slice(0, lastSpace) : cut;
+  return `${base.trimEnd()}…`;
+}
+
+export function extractTitle(html: string): string | null {
   const titles = [
     ...collectMetaContents(html, 'property', 'og:title'),
     ...collectMetaContents(html, 'name', 'twitter:title'),
   ];
-  return titles[0] ?? null;
+  // Fallback: bare <title> when ticket sites omit OG (rare).
+  if (titles.length === 0) {
+    const m = /<title[^>]*>([^<]*)<\/title>/i.exec(html);
+    if (m?.[1]) titles.push(decodeHtmlEntities(m[1]));
+  }
+  // Event name field max is 200 on the client.
+  for (const raw of titles) {
+    const cleaned = cleanMetaText(raw, 200);
+    if (cleaned) return cleaned;
+  }
+  return null;
+}
+
+export function extractDescription(html: string): string | null {
+  const descriptions = [
+    ...collectMetaContents(html, 'property', 'og:description'),
+    ...collectMetaContents(html, 'name', 'twitter:description'),
+    ...collectMetaContents(html, 'name', 'description'),
+  ];
+  // Caption / description field max is 500 on the client.
+  for (const raw of descriptions) {
+    const cleaned = cleanMetaText(raw, 500);
+    if (cleaned) return cleaned;
+  }
+  return null;
 }
 
 async function fetchHtmlViaNode(
@@ -316,13 +352,19 @@ export async function fetchLinkPreview(rawUrl: string): Promise<LinkPreviewResul
   try {
     const html = await loadPageHtml(pageUrl.toString());
     if (!html) {
-      return { url: pageUrl.toString(), imageUrl: null, title: null };
+      return {
+        url: pageUrl.toString(),
+        imageUrl: null,
+        title: null,
+        description: null,
+      };
     }
 
     return {
       url: pageUrl.toString(),
       imageUrl: extractImageUrl(html, pageUrl),
       title: extractTitle(html),
+      description: extractDescription(html),
     };
   } catch (err) {
     if ((err as { name?: string })?.name === 'AbortError') {
