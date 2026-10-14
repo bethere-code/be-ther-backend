@@ -1,0 +1,30 @@
+# Dev API (dev.be-ther.com) — runs from its own checkout (/opt/be-ther-backend-dev)
+# next to prod. Shares prod's MongoDB server but uses its own database
+# (MONGODB_URI=.../be_ther_dev in .env.development).
+#   docker compose -f docker-compose.dev.yml -p be-ther-dev up -d --build
+services:
+  app-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: be-ther-backend:dev
+    container_name: be-ther-backend-dev
+    restart: unless-stopped
+    env_file:
+      - .env.development
+    ports:
+      - '127.0.0.1:3001:3000'
+    volumes:
+      - be_ther_dev_uploads:/app/uploads
+      - be_ther_dev_logs:/app/logs
+    networks:
+      - prod_db
+
+networks:
+  prod_db:
+    external: true
+    name: be-ther-backend_default
+
+volumes:
+  be_ther_dev_uploads:
+  be_ther_dev_logs:

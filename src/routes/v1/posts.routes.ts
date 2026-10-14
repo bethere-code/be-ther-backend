@@ -7,11 +7,11 @@ import { CalendarModel } from '../../models/calendar.model.js';
 import { CommentLikeModel } from '../../models/comment-like.model.js';
 import { CommentModel } from '../../models/comment.model.js';
 import { LikeModel } from '../../models/like.model.js';
-import { NotificationModel } from '../../models/notification.model.js';
 import { PostModel } from '../../models/post.model.js';
 import { PostReportModel } from '../../models/post-report.model.js';
 import { PostViewModel } from '../../models/post-view.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
+import { deletePostsCascade } from '../../services/account.service.js';
 import { areMutualFollowers, loadViewerFollowGraph, sortByViewerSocialGraph } from '../../services/follow.service.js';
 import {
   createAndPushNotification,
@@ -1304,21 +1304,8 @@ export async function registerPostsV1Routes(app: FastifyInstance): Promise<void>
         return reply.status(403).send({ ok: false, error: { message: 'Only the author can delete this event' } });
       }
 
-      const commentIds = (
-        await CommentModel.find({ postId }).select('_id').lean()
-      ).map((c) => c._id);
-
       await Promise.all([
-        LikeModel.deleteMany({ postId }),
-        BookmarkModel.deleteMany({ postId }),
-        CalendarModel.deleteMany({ postId }),
-        NotificationModel.deleteMany({ postId }),
-        ProfileCalendarHiddenModel.deleteMany({ postId }),
-        CommentModel.deleteMany({ postId }),
-        commentIds.length > 0
-          ? CommentLikeModel.deleteMany({ commentId: { $in: commentIds } })
-          : Promise.resolve(),
-        PostModel.deleteOne({ _id: postId }),
+        deletePostsCascade([post._id]),
         UserModel.updateOne({ _id: userId }, { $inc: { eventsCount: -1 } }),
       ]);
       await UserModel.updateOne(

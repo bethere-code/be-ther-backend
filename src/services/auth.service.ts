@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import type { Env } from '../config/env.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../lib/jwt.js';
 import { sendOtpEmail } from '../lib/mail.js';
+import { exchangeAppleAuthCode, verifyAppleIdToken } from '../lib/apple.js';
 import { verifyGoogleIdToken } from '../lib/google.js';
 import { savePublicObject } from '../lib/storage.js';
 import { OtpChallengeModel } from '../models/otp-challenge.model.js';
@@ -22,7 +23,7 @@ function emailLocalPart(email: string): string {
   return email.split('@')[0]?.replace(/[^a-z0-9_]/gi, '').toLowerCase() || 'user';
 }
 
-function firstNameFromGoogleName(name?: string): string | undefined {
+function firstNameFromName(name?: string): string | undefined {
   const raw = name?.trim();
   if (!raw) return undefined;
   const first = raw.split(/\s+/)[0]?.trim();
@@ -354,6 +355,9 @@ export async function loginWithPassword(
   if (user.authProvider === 'google' && !user.passwordHash) {
     throw new Error('Use Google sign-in for this account');
   }
+  if (user.authProvider === 'apple' && !user.passwordHash) {
+    throw new Error('Use Apple sign-in for this account');
+  }
   if (!user.passwordHash) {
     throw new Error('Password login is not available for this account');
   }
@@ -433,72 +437,133 @@ export async function verifySignupOtp(
   return { accessToken, refreshToken, user: user.toJSON(), isNewUser: true };
 }
 
-export async function loginWithGoogle(
-  env: Env,
-  idToken: string,
-  meta?: AuthClientMeta,
-): Promise<{
+type SocialIdentity = {
+  provider: 'google' | 'apple';
+  sub: string;
+  email?: string;
+  name?: string;
+  picture?: string;
+  /** Apple "Hide My Email" relay address — its local part is random noise. */
+  isPrivateEmail?: boolean;
+};
+
+type SocialLoginResult = {
   accessToken: string;
   refreshToken: string;
   user: unknown;
   isNewUser: boolean;
-}> {
-  const google = await verifyGoogleIdToken(env, idToken);
-  if (!google.email) {
-    throw new Error('Google account has no email');
-  }
+};
 
-  let user = await UserModel.findOne({ googleSub: google.sub });
+/** Find by provider id → else link by email → else create. Shared by Google + Apple. */
+async function loginWithSocial(
+  env: Env,
+  identity: SocialIdentity,
+  meta?: AuthClientMeta,
+): Promise<SocialLoginResult> {
+  const subField = identity.provider === 'google' ? 'googleSub' : 'appleSub';
+  const providerLabel = identity.provider === 'google' ? 'Google' : 'Apple';
+
+  let user = await UserModel.findOne({ [subField]: identity.sub });
   let isNewUser = false;
-  if (!user) {
-    user = await UserModel.findOne({ email: google.email.toLowerCase() });
+  if (user) {
+    stampAuthClient(user, meta, false);
+    await user.save();
+  } else {
+    if (!identity.email) {
+      throw new Error(`${providerLabel} account has no email`);
+    }
+    const email = identity.email.toLowerCase();
+    const firstName = firstNameFromName(identity.name);
+    user = await UserModel.findOne({ email });
     if (user) {
-      user.googleSub = google.sub;
+      user.set(subField, identity.sub);
       user.emailVerified = true;
-      user.authProvider = user.authProvider || 'google';
-      if (google.picture && !user.avatarUrl) user.avatarUrl = google.picture;
-      const firstName = firstNameFromGoogleName(google.name);
+      user.authProvider = user.authProvider || identity.provider;
+      if (identity.picture && !user.avatarUrl) user.avatarUrl = identity.picture;
       if (firstName && user.displayName === user.username) user.displayName = firstName;
       stampAuthClient(user, meta, false);
       await user.save();
     } else {
-      const base = emailLocalPart(google.email);
+      const base =
+        identity.isPrivateEmail && firstName
+          ? emailLocalPart(firstName)
+          : emailLocalPart(email);
       const username = await uniqueUsername(base);
-      const firstName = firstNameFromGoogleName(google.name);
       let avatarUrl = '';
-      if (google.picture) {
+      if (identity.picture) {
         try {
-          const res = await fetch(google.picture);
+          const res = await fetch(identity.picture);
           const buf = Buffer.from(await res.arrayBuffer());
           const mime = res.headers.get('content-type') || 'image/jpeg';
           avatarUrl = await savePublicObject(env, buf, mime);
         } catch {
-          avatarUrl = google.picture;
+          avatarUrl = identity.picture;
         }
       }
       user = await UserModel.create({
-        email: google.email.toLowerCase(),
+        email,
         username,
         displayName: firstName ?? username,
         avatarUrl,
-        googleSub: google.sub,
+        [subField]: identity.sub,
         emailVerified: true,
-        authProvider: 'google',
+        authProvider: identity.provider,
         passwordHash: '',
         settings: defaultUserSettings(),
         ...deviceFieldsForCreate(meta),
       });
       isNewUser = true;
     }
-  } else {
-    stampAuthClient(user, meta, false);
-    await user.save();
   }
 
-  const accessToken = signAccessToken(env, String(user!._id));
-  const refreshToken = signRefreshToken(env, String(user!._id), user!.tokenVersion);
+  const accessToken = signAccessToken(env, String(user._id));
+  const refreshToken = signRefreshToken(env, String(user._id), user.tokenVersion);
 
-  return { accessToken, refreshToken, user: user!.toJSON(), isNewUser };
+  return { accessToken, refreshToken, user: user.toJSON(), isNewUser };
+}
+
+export async function loginWithGoogle(
+  env: Env,
+  idToken: string,
+  meta?: AuthClientMeta,
+): Promise<SocialLoginResult> {
+  const google = await verifyGoogleIdToken(env, idToken);
+  if (!google.email) {
+    throw new Error('Google account has no email');
+  }
+  return loginWithSocial(env, { provider: 'google', ...google }, meta);
+}
+
+export async function loginWithApple(
+  env: Env,
+  input: { identityToken: string; authorizationCode?: string; givenName?: string },
+  meta?: AuthClientMeta,
+): Promise<SocialLoginResult> {
+  const apple = await verifyAppleIdToken(env, input.identityToken);
+  const result = await loginWithSocial(
+    env,
+    {
+      provider: 'apple',
+      sub: apple.sub,
+      email: apple.email,
+      // Apple sends the name only on the very first authorization, never in the token.
+      name: input.givenName,
+      isPrivateEmail: apple.isPrivateEmail,
+    },
+    meta,
+  );
+  const code = input.authorizationCode;
+  if (code) {
+    // Off the login path: only needed later to revoke Apple access on account deletion.
+    void exchangeAppleAuthCode(env, code)
+      .then((token) =>
+        token
+          ? UserModel.updateOne({ appleSub: apple.sub }, { $set: { appleRefreshToken: token } })
+          : null,
+      )
+      .catch(() => undefined);
+  }
+  return result;
 }
 
 export async function refreshTokens(

@@ -19,7 +19,7 @@ export async function registerV1Api(app: FastifyInstance, env: Env): Promise<voi
   await registerMediaV1Routes(app, env);
   await registerPlacesV1Routes(app, env);
   await registerPostsV1Routes(app);
-  await registerUsersV1Routes(app);
+  await registerUsersV1Routes(app, env);
   await registerExploreV1Routes(app);
   await registerNotificationsV1Routes(app);
   await registerAnalyticsV1Routes(app);

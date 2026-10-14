@@ -44,6 +44,14 @@ const schema = z
     ANDROID_SHA256_CERT_FINGERPRINTS: z.string().optional(),
     /** Apple Developer Team ID for Universal Links (`apple-app-site-association`). */
     IOS_TEAM_ID: z.string().optional(),
+    /** Sign in with Apple: identity token audience (iOS bundle id). */
+    APPLE_BUNDLE_ID: z.string().default('com.bether.app'),
+    /**
+     * Sign in with Apple key (.p8) — only needed to revoke Apple tokens on account
+     * deletion. Private key as one line with `\n` escapes. Uses IOS_TEAM_ID as team.
+     */
+    APPLE_KEY_ID: z.string().optional(),
+    APPLE_PRIVATE_KEY: z.string().optional(),
     /**
      * Shared secret for POST /api/v1/internal/nudge-tick (VPS cron).
      * When set, enables external runner without keeping a busy loop — still needs API up.
@@ -58,6 +66,14 @@ const schema = z
     FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
     /** Or path to service account JSON file (local/dev). */
     FIREBASE_SERVICE_ACCOUNT_PATH: z.string().optional(),
+    /**
+     * Broadcast / city-topic pushes reach every device in the Firebase project.
+     * Set `false` on dev servers that share prod's Firebase project.
+     */
+    PUSH_TOPICS_ENABLED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((v) => v === 'true'),
 
     R2_ACCOUNT_ID: z.string().optional(),
     R2_ACCESS_KEY_ID: z.string().optional(),

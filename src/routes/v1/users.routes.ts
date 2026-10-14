@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { Types } from 'mongoose';
 import { z } from 'zod';
 
+import type { Env } from '../../config/env.js';
 import { BookmarkModel } from '../../models/bookmark.model.js';
 import { BlockModel } from '../../models/block.model.js';
 import { CalendarModel } from '../../models/calendar.model.js';
@@ -10,6 +11,7 @@ import { PostModel } from '../../models/post.model.js';
 import { ProfileCalendarHiddenModel } from '../../models/profile-calendar-hidden.model.js';
 import { UserModel } from '../../models/user.model.js';
 import { USER_REPORT_REASONS, UserReportModel } from '../../models/user-report.model.js';
+import { deleteAccount } from '../../services/account.service.js';
 import { deleteFollowEdge, followPair, hasPendingFollowRequest, isBlockedEitherWay, isFollowing, respondFollowRequest, setBlock, toggleFollow } from '../../services/follow.service.js';
 import { formatJoinedDate, parseEventDateToIso } from '../../utils/event-date.js';
 import { enrichPostsForViewer } from '../../utils/enrich-posts.js';
@@ -260,6 +262,7 @@ async function enrichUserForViewer(
   delete payload.fcmDevices;
   delete payload.fcmCityTopic;
   delete payload.passwordHash;
+  delete payload.appleSub;
   return payload;
 }
 
@@ -298,7 +301,7 @@ function permissionEntryFromStatus(status: z.infer<typeof permissionStatusSchema
   return { granted, status, updatedAt: new Date() };
 }
 
-export async function registerUsersV1Routes(app: FastifyInstance): Promise<void> {
+export async function registerUsersV1Routes(app: FastifyInstance, env: Env): Promise<void> {
   app.get(
     '/api/v1/users/me',
     { preHandler: [app.authenticate] },
@@ -338,6 +341,18 @@ export async function registerUsersV1Routes(app: FastifyInstance): Promise<void>
       }
       await user.save();
       return reply.send({ ok: true, data: user.toJSON() });
+    },
+  );
+
+  app.delete(
+    '/api/v1/users/me',
+    { preHandler: [app.authenticate] },
+    async (req, reply) => {
+      const deleted = await deleteAccount(env, req.userId!);
+      if (!deleted) {
+        return reply.status(404).send({ ok: false, error: { message: 'User not found' } });
+      }
+      return reply.send({ ok: true, data: { deleted: true } });
     },
   );
 

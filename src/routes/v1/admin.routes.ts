@@ -44,7 +44,7 @@ import { normalizeTimeZone } from '../../utils/timezone.js';
 
 const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
 const USER_SELECT =
-  '-passwordHash -tokenVersion -googleSub';
+  '-passwordHash -tokenVersion -googleSub -appleSub';
 
 function parseIso(raw: string | undefined): Date | null {
   if (!raw) return null;

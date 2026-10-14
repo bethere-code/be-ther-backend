@@ -5,6 +5,7 @@ import type { Env } from '../../config/env.js';
 import {
   checkSignupAvailability,
   loginWithPassword,
+  loginWithApple,
   loginWithGoogle,
   refreshTokens,
   requestLoginOtp,
@@ -93,6 +94,13 @@ const signupAvailabilitySchema = z.object({
 });
 const googleSchema = z.object({
   idToken: z.string().min(10),
+  device: deviceSchema,
+  fcmToken: fcmTokenSchema,
+});
+const appleSchema = z.object({
+  identityToken: z.string().min(10),
+  authorizationCode: z.string().min(1).max(2048).optional(),
+  givenName: z.string().trim().max(80).optional(),
   device: deviceSchema,
   fcmToken: fcmTokenSchema,
 });
@@ -259,6 +267,28 @@ export async function registerAuthV1Routes(app: FastifyInstance, env: Env): Prom
       return reply.send({ ok: true, data: tokens });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Google login failed';
+      return reply.status(401).send({ ok: false, error: { message } });
+    }
+  });
+
+  app.post('/api/v1/auth/apple', async (req, reply) => {
+    const parsed = appleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ ok: false, error: parsed.error.flatten() });
+    }
+    try {
+      const tokens = await loginWithApple(
+        env,
+        {
+          identityToken: parsed.data.identityToken,
+          authorizationCode: parsed.data.authorizationCode,
+          givenName: parsed.data.givenName || undefined,
+        },
+        { device: parsed.data.device, fcmToken: parsed.data.fcmToken },
+      );
+      return reply.send({ ok: true, data: tokens });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Apple login failed';
       return reply.status(401).send({ ok: false, error: { message } });
     }
   });

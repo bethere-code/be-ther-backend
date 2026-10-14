@@ -80,8 +80,16 @@ const userSchema = new Schema(
     avatarUrl: { type: String, default: '' },
     bio: { type: String, default: '' },
     googleSub: { type: String, unique: true, sparse: true, index: true },
+    appleSub: { type: String, unique: true, sparse: true, index: true },
+    /** Apple refresh token — only used to revoke Sign in with Apple on account deletion. */
+    appleRefreshToken: { type: String, default: '', select: false },
     emailVerified: { type: Boolean, default: false },
-    authProvider: { type: String, enum: ['otp', 'password', 'google'], default: 'otp', index: true },
+    authProvider: {
+      type: String,
+      enum: ['otp', 'password', 'google', 'apple'],
+      default: 'otp',
+      index: true,
+    },
     /** bcrypt hash; absent for OAuth-only accounts */
     passwordHash: { type: String, default: '' },
     age: { type: Number, min: 10, max: 125 },
@@ -136,6 +144,8 @@ userSchema.set('toJSON', {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   transform: (_doc: unknown, ret: Record<string, any>) => {
     delete ret.passwordHash;
+    delete ret.appleSub;
+    delete ret.appleRefreshToken;
     delete ret.fcmToken;
     delete ret.fcmDevices;
     delete ret.fcmCityTopic;

@@ -31,6 +31,7 @@ export type PushPayload = {
 
 let messaging: admin.messaging.Messaging | null = null;
 let initAttempted = false;
+let topicsEnabled = true;
 
 function loadServiceAccount(env: Env): admin.ServiceAccount | null {
   const rawJson = env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
@@ -59,6 +60,7 @@ function loadServiceAccount(env: Env): admin.ServiceAccount | null {
 export function initFirebaseAdmin(env: Env): void {
   if (initAttempted) return;
   initAttempted = true;
+  topicsEnabled = env.PUSH_TOPICS_ENABLED;
   const sa = loadServiceAccount(env);
   if (!sa) {
     log.warn(
@@ -213,6 +215,9 @@ export async function sendToTopic(
   topic: string,
   payload: PushPayload,
 ): Promise<{ ok: boolean; error?: string }> {
+  if (!topicsEnabled) {
+    return { ok: false, error: 'Broadcast / topic pushes are disabled on this server' };
+  }
   if (!messaging) return { ok: false, error: 'Firebase Admin not configured' };
   const t = topic.trim();
   if (!t) return { ok: false, error: 'Empty topic' };
