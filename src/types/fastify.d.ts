@@ -4,6 +4,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     userId?: string;
     adminEmail?: string;
+    errorBody?: unknown;
   }
 
   interface FastifyInstance {

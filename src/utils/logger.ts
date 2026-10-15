@@ -47,7 +47,7 @@ export function createAppLoggerOptions(env: Env): AppLoggerOptions {
 
   return {
     loggerInstance: pino(
-      { level: 'info' },
+      { level: 'info', timestamp: pino.stdTimeFunctions.isoTime },
       pino.multistream([
         { level: 'info', stream: process.stdout },
         { level: 'error', stream: errorFileStream(env.LOG_DIR) },

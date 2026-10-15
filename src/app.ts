@@ -52,17 +52,34 @@ export async function buildApp(env: Env) {
   await registerShareRoutes(app, env);
   await registerV1Api(app, env);
 
-  if (env.NODE_ENV === 'development') {
-    app.addHook('onRequest', async (req) => {
-      req.log.info(`-> ${req.method} ${req.url}`);
-    });
-    app.addHook('onResponse', async (req, reply) => {
-      req.log.info(`<-${reply.statusCode} ${req.method} ${req.url} (${reply.elapsedTime.toFixed(1)}ms)`);
-    });
-  }
+  app.addHook('onSend', async (req, reply, payload) => {
+    if (reply.statusCode >= 400 && typeof payload === 'string') {
+      try {
+        req.errorBody = (JSON.parse(payload) as { error?: unknown }).error;
+      } catch {
+        req.errorBody = payload.slice(0, 500);
+      }
+    }
+    return payload;
+  });
 
-  app.addHook('onError', async (req, reply, err) => {
-    req.log.error(`${reply.statusCode} ${req.method} ${req.url} - ${err.message}`);
+  app.addHook('onResponse', async (req, reply) => {
+    if (req.url === '/health') return;
+    const status = reply.statusCode;
+    const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+    req.log[level](
+      {
+        method: req.method,
+        url: req.url,
+        status,
+        ms: Math.round(reply.elapsedTime),
+        user: req.userId ?? req.adminEmail,
+        ip: req.headers['x-forwarded-for'] ?? req.ip,
+        ua: req.headers['user-agent'],
+        error: req.errorBody,
+      },
+      `${status} ${req.method} ${req.url}`,
+    );
   });
 
   app.setErrorHandler((error, request, reply) => {

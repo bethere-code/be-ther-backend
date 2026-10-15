@@ -15,6 +15,11 @@ services:
     volumes:
       - be_ther_uploads_data:/app/uploads
       - be_ther_logs_data:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: '20m'
+        max-file: '10'
 
   mongodb:
     image: mongo:7
